@@ -43,16 +43,16 @@ impl slang_ui::Hook for App {
                 // Check validity of obligation
                 solver.assert(!soblig.as_bool()?)?;
                 // Run SMT solver on all current assertions
-                match solver.check_sat_with_model()? {
+                match solver.check_sat()? {
                     // If the obligations result not valid, report the error (on
                     // the span in which the error happens)
-                    smtlib::SatResultWithModel::Sat(model) => {
-                        cx.error(oblig.span, format!("{msg}: {model}"));
+                    smtlib::SatResult::Sat => {
+                        cx.error(oblig.span, format!("{msg}"));
                     }
-                    smtlib::SatResultWithModel::Unknown => {
+                    smtlib::SatResult::Unknown => {
                         cx.warning(oblig.span, "{msg}: unknown sat result");
                     }
-                    smtlib::SatResultWithModel::Unsat => (),
+                    smtlib::SatResult::Unsat => (),
                 }
                 Ok(())
             })?;
