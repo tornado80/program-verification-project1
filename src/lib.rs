@@ -70,6 +70,7 @@ fn cmd_to_ivlcmd(cmd: &Cmd) -> Result<IVLCmd> {
         CmdKind::Seq(cmd1, cmd2) => Ok(cmd_to_ivlcmd(cmd1)?.seq(&cmd_to_ivlcmd(cmd2)?)),
         CmdKind::VarDefinition { name, ty:(_, typ) , expr:None  } => Ok(IVLCmd::havoc(name, typ)),
         CmdKind::VarDefinition { name, ty:_, expr:Some(value)  } => Ok(IVLCmd::assign(name, value)),
+        CmdKind::Assignment { name, expr } => Ok(IVLCmd::assign(name, expr)),
         _ => todo!("{:#?}", cmd.kind),
     }
 }
