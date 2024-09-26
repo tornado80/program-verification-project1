@@ -2,7 +2,7 @@ pub mod ivl;
 mod ivl_ext;
 
 use ivl::{IVLCmd, IVLCmdKind};
-use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Op, Type};
+use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Name, Op, Type};
 use slang_ui::prelude::*;
 
 pub struct App;
@@ -79,7 +79,29 @@ fn wp(ivl: &IVLCmd, post_condition: &Expr) -> Result<(Expr, String)> {
         IVLCmdKind::Assert { condition, message } => Ok((Expr::new_typed(ExprKind::Infix(Box::new(condition.clone()), Op::And, Box::new(post_condition.clone())), Type::Bool), message.clone())),
         IVLCmdKind::Seq(cmd1, cmd2) => Ok((wp(cmd1, &wp(cmd2, post_condition)?.0)?.0, String::from("Unkown error: seq"))),
         IVLCmdKind::Havoc { name:_, ty:_ } => Ok((post_condition.clone(), String::from("Unkown error: havoc"))),
-        IVLCmdKind::Assignment { name, expr } => Ok((post_condition.clone(), String::from("Unkown error: assignment"))),
+        IVLCmdKind::Assignment { name, expr } => Ok((replace_in_expression(post_condition, name, expr), String::from("Unkown error: assignment"))),
         _ => todo!("Not supported in wp (yet)."),
+    }
+}
+
+// f (e, i, v) -> e[i <- v]
+fn replace_in_expression(origin_expression: &Expr, identifier: &Name, identifier_value: &Expr) -> Expr {
+    match &origin_expression.kind {
+        
+        ExprKind::Ident(name) if name.0 == identifier.ident.0 => identifier_value.clone(),
+        ExprKind::Prefix(op, expr) => Expr::new_typed(
+            ExprKind::Prefix(
+                *op, 
+                Box::new(replace_in_expression(expr, identifier, identifier_value))
+            ), 
+            origin_expression.ty.clone()),
+        ExprKind::Infix(lhs, op, rhs) => Expr::new_typed(
+            ExprKind::Infix(
+                Box::new(replace_in_expression(lhs, identifier, identifier_value)), 
+                *op, 
+                Box::new(replace_in_expression(rhs, identifier, identifier_value))
+            ), 
+            origin_expression.ty.clone()),
+        _ => origin_expression.clone(),
     }
 }
