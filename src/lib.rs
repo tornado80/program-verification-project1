@@ -87,7 +87,6 @@ fn wp(ivl: &IVLCmd, post_condition: &Expr) -> Result<(Expr, String)> {
 // f (e, i, v) -> e[i <- v]
 fn replace_in_expression(origin_expression: &Expr, identifier: &Name, identifier_value: &Expr) -> Expr {
     match &origin_expression.kind {
-        
         ExprKind::Ident(name) if name.0 == identifier.ident.0 => identifier_value.clone(),
         ExprKind::Prefix(op, expr) => Expr::new_typed(
             ExprKind::Prefix(
