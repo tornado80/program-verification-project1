@@ -2,7 +2,7 @@ pub mod ivl;
 mod ivl_ext;
 
 use ivl::{IVLCmd, IVLCmdKind};
-use slang::ast::{Cmd, CmdKind, Expr};
+use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Op, Type};
 use slang_ui::prelude::*;
 
 pub struct App;
@@ -67,15 +67,19 @@ impl slang_ui::Hook for App {
 fn cmd_to_ivlcmd(cmd: &Cmd) -> Result<IVLCmd> {
     match &cmd.kind {
         CmdKind::Assert { condition, .. } => Ok(IVLCmd::assert(condition, "Assert might fail!")),
-        _ => todo!("Not supported (yet)."),
+        CmdKind::Seq(cmd1, cmd2) => Ok(cmd_to_ivlcmd(cmd1)?.seq(&cmd_to_ivlcmd(cmd2)?)),
+        CmdKind::VarDefinition { name, ty:(_, typ) , expr:None  } => Ok(IVLCmd::havoc(name, typ)),
+        CmdKind::VarDefinition { name, ty:_, expr:Some(value)  } => Ok(IVLCmd::assign(name, value)),
+        _ => todo!("{:#?}", cmd.kind),
     }
 }
 
-// Weakest precondition of (assert-only) IVL programs comprised of a single
-// assertion
-fn wp(ivl: &IVLCmd, _: &Expr) -> Result<(Expr, String)> {
+fn wp(ivl: &IVLCmd, post_condition: &Expr) -> Result<(Expr, String)> {
     match &ivl.kind {
-        IVLCmdKind::Assert { condition, message } => Ok((condition.clone(), message.clone())),
-        _ => todo!("Not supported (yet)."),
+        IVLCmdKind::Assert { condition, message } => Ok((Expr::new_typed(ExprKind::Infix(Box::new(condition.clone()), Op::And, Box::new(post_condition.clone())), Type::Bool), message.clone())),
+        IVLCmdKind::Seq(cmd1, cmd2) => Ok((wp(cmd1, &wp(cmd2, post_condition)?.0)?.0, String::from("Unkown error: seq"))),
+        IVLCmdKind::Havoc { name:_, ty:_ } => Ok((post_condition.clone(), String::from("Unkown error: havoc"))),
+        IVLCmdKind::Assignment { name, expr } => Ok((post_condition.clone(), String::from("Unkown error: assignment"))),
+        _ => todo!("Not supported in wp (yet)."),
     }
 }
