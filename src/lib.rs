@@ -2,8 +2,11 @@ pub mod ivl;
 mod ivl_ext;
 
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
-use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Name};
+use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Ident, Name, Op, Type};
 use slang_ui::prelude::*;
+use std::cell::Cell;
+
+thread_local!(static HAVOC_COUNTER: Cell<i32> = Cell::new(0));
 
 pub struct App;
 
@@ -69,21 +72,38 @@ impl slang_ui::Hook for App {
 fn cmd_to_ivlcmd(cmd: &Cmd) -> Result<IVLCmd> {
     match &cmd.kind {
         CmdKind::Assert { condition, .. } => Ok(IVLCmd::assert(condition, "Assert might fail!")),
+        CmdKind::Assume { condition} => Ok(IVLCmd::assume(condition)),
         CmdKind::Seq(cmd1, cmd2) => Ok(cmd_to_ivlcmd(cmd1)?.seq(&cmd_to_ivlcmd(cmd2)?)),
-        CmdKind::VarDefinition { name, ty:(_, typ) , expr:None  } => Ok(IVLCmd::havoc(name, typ)),
+        CmdKind::VarDefinition { name, ty:(_, typ) , expr:None  } => Ok(havoc_to_ivl(name, typ)),
         CmdKind::VarDefinition { name, ty:_, expr:Some(value)  } => Ok(IVLCmd::assign(name, value)),
         CmdKind::Assignment { name, expr } => Ok(IVLCmd::assign(name, expr)),
         _ => todo!("{:#?}", cmd.kind),
     }
 }
 
-fn wp_set(ivl: &IVLCmd, conditions: Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
+fn havoc_to_ivl(name: &Name, typ: &Type) -> IVLCmd{
+    HAVOC_COUNTER.set(HAVOC_COUNTER.get() + 1);
+    return IVLCmd::assign(name, &Expr::new_typed(ExprKind::Ident(Ident(format!("havoc{0}", HAVOC_COUNTER.get()).to_string())), typ.clone()))
+}
+
+fn wp_set(ivl: &IVLCmd, post_conditions: Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
     match &ivl.kind {
-        IVLCmdKind::Assert { condition, message } => Ok([conditions, vec![WeakestPrecondition { expr: condition.clone(), span: condition.span, msg: message.clone() }]].concat()),
-        IVLCmdKind::Seq(cmd1, cmd2) => wp_set_seq(cmd1, cmd2, conditions),
-        IVLCmdKind::Assignment { name, expr } => Ok(wp_set_assignment(name, expr, conditions)),
+        IVLCmdKind::Assert { condition, message } => Ok([post_conditions, vec![WeakestPrecondition { expr: condition.clone(), span: condition.span, msg: message.clone() }]].concat()),
+        IVLCmdKind::Assume { condition } => wp_set_assume(condition, post_conditions),
+        IVLCmdKind::Seq(cmd1, cmd2) => wp_set_seq(cmd1, cmd2, post_conditions),
+        IVLCmdKind::Assignment { name, expr } => Ok(wp_set_assignment(name, expr, post_conditions)),
+
         _ => todo!("Not supported in wp (yet)."),
     }
+}
+
+fn wp_set_assume(condition: &Expr, post_conditions: Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
+    let mut new_conditions: Vec<WeakestPrecondition> = vec![];
+    for WeakestPrecondition { expr, span, msg } in post_conditions {
+        let new_condition = Expr::new_typed(ExprKind::Infix(Box::new(condition.clone()), Op::Imp, Box::new(expr.clone())), Type::Bool);
+        new_conditions.push(WeakestPrecondition { expr: new_condition, span: span, msg: msg });
+    }
+    return Ok(new_conditions);
 }
 
 fn wp_set_seq(cmd1: &Box<IVLCmd>, cmd2: &Box<IVLCmd>, post_condition: Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
