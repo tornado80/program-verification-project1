@@ -21,3 +21,10 @@ pub enum IVLCmdKind {
     Seq(Box<IVLCmd>, Box<IVLCmd>),
     NonDet(Box<IVLCmd>, Box<IVLCmd>),
 }
+
+#[derive(Debug, Clone)]
+pub struct WeakestPrecondition {
+    pub expr: Expr,
+    pub span: Span,
+    pub msg: String,
+}
