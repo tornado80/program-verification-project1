@@ -35,6 +35,18 @@ impl slang_ui::Hook for App {
             // Encode it in IVL
             let ivl = cmd_to_ivlcmd(cmd, &mut havoc_counter)?;
 
+            /*
+            let posts = m.ensures();
+            let post = posts
+                .cloned()
+                .reduce(|a, b| a & b)
+                .unwrap_or(Expr::bool(true));
+            // Assert postcondition
+            let spost = post.smt()?;
+            // Assert precondition
+            solver.assert(spost.as_bool()?)?;
+            */
+
             let raw_post_conditions = m.ensures();
             let mut post_conditions = vec![];
             for post_condition in raw_post_conditions {
