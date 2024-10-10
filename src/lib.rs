@@ -34,9 +34,15 @@ impl slang_ui::Hook for App {
             let mut havoc_counter = 0;
             // Encode it in IVL
             let ivl = cmd_to_ivlcmd(cmd, &mut havoc_counter)?;
+
+            let raw_post_conditions = m.ensures();
+            let mut post_conditions = vec![];
+            for post_condition in raw_post_conditions {
+                post_conditions.push(WeakestPrecondition { expr: post_condition.clone(), span: post_condition.span, msg: String::from("Ensure might not hold")});
+            }
             // Calculate obligation and error message (if obligation is not
             // verified)
-            let wp_list = wp_set(&ivl, vec![])?;
+            let wp_list = wp_set(&ivl, post_conditions.clone())?;
             for WeakestPrecondition{ expr, span, msg } in wp_list {
                 // Convert obligation to SMT expression
                 let soblig = expr.smt()?;
@@ -87,6 +93,7 @@ fn cmd_to_ivlcmd(cmd: &Cmd, havoc_counter: &mut i32) -> Result<IVLCmd> {
             insert_division_by_zero_assertions(expr, span)?.seq(&IVLCmd::assign(name, expr)),
         CmdKind::Match {body} =>
             match_to_ivl(body, havoc_counter)?,
+        CmdKind::Return { expr: Some(value) } => IVLCmd::assign(&Name { ident: Ident(String::from("result")), span: span.clone()}, value),
         _ => todo!("{:#?}", cmd.kind),
     })
 }
