@@ -5,6 +5,7 @@ use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
 use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Ident, Name, Op, Type};
 use slang_ui::prelude::*;
 use slang_ui::prelude::slang::ast::{Cases, PrefixOp};
+use slang_ui::prelude::slang::Span;
 
 pub struct App;
 
@@ -70,26 +71,93 @@ impl slang_ui::Hook for App {
 // Encoding of (assert-only) statements into IVL (for programs comprised of only
 // a single assertion)
 fn cmd_to_ivlcmd(cmd: &Cmd, havoc_counter: &mut i32) -> Result<IVLCmd> {
-    match &cmd.kind {
-        CmdKind::Assert { condition, .. } => Ok(IVLCmd::assert(condition, "Assert might fail!")),
-        CmdKind::Assume { condition} => Ok(IVLCmd::assume(condition)),
-        CmdKind::Seq(cmd1, cmd2) => Ok(cmd_to_ivlcmd(cmd1, havoc_counter)?.seq(&cmd_to_ivlcmd(cmd2, havoc_counter)?)),
-        CmdKind::VarDefinition { name, ty:(_, typ) , expr:None  } => Ok(havoc_to_ivl(name, typ, havoc_counter)),
-        CmdKind::VarDefinition { name, ty:_, expr:Some(value)  } => Ok(IVLCmd::assign(name, value)),
-        CmdKind::Assignment { name, expr } => Ok(IVLCmd::assign(name, expr)),
-        CmdKind::Match {body} => match_to_ivl(body, havoc_counter),
+    let &Cmd { kind, span, .. } = &cmd;
+    Ok(match kind {
+        CmdKind::Assert { condition, message } =>
+            insert_division_by_zero_assertions(condition, span)?.seq(&IVLCmd::assert(condition, message)),
+        CmdKind::Assume { condition} =>
+            insert_division_by_zero_assertions(condition, span)?.seq(&IVLCmd::assume(condition)),
+        CmdKind::Seq(cmd1, cmd2) =>
+            cmd_to_ivlcmd(cmd1, havoc_counter)?.seq(&cmd_to_ivlcmd(cmd2, havoc_counter)?),
+        CmdKind::VarDefinition { name, ty:(_, typ) , expr:None  } =>
+            havoc_to_ivl(name, typ, havoc_counter),
+        CmdKind::VarDefinition { name, ty:_, expr:Some(value)  } =>
+            insert_division_by_zero_assertions(value, span)?.seq(&IVLCmd::assign(name, value)),
+        CmdKind::Assignment { name, expr } =>
+            insert_division_by_zero_assertions(expr, span)?.seq(&IVLCmd::assign(name, expr)),
+        CmdKind::Match {body} =>
+            match_to_ivl(body, havoc_counter)?,
         _ => todo!("{:#?}", cmd.kind),
+    })
+}
+
+fn insert_division_by_zero_assertions(expr: &Expr, span: &Span) -> Result<IVLCmd> {
+    let divisors = extract_divisors(expr)?;
+    let mut assertion = IVLCmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
+    if divisors.is_empty() {
+        return Ok(assertion.clone());
     }
+    for divisor in divisors {
+        assertion = assertion.seq(&IVLCmd::assert_with_span(
+            &Expr::new_typed(ExprKind::Infix(
+                Box::new(divisor),
+                Op::Ne,
+                Box::new(Expr::new_typed(ExprKind::Num(0), Type::Int))
+            ), Type::Bool),
+            "Possible division by zero!",
+            &span)
+        );
+    }
+    return Ok(assertion);
+}
+
+fn extract_divisors(expr: &Expr) -> Result<Vec<Expr>> {
+    Ok(match &expr.kind {
+        ExprKind::Prefix(_op, e) => extract_divisors(e)?,
+        ExprKind::Infix(e1, op, e2) if op.clone() == Op::Div => {
+            let mut result = extract_divisors(e1)?.clone();
+            result.extend(extract_divisors(e2)?);
+            result.extend(vec![*e2.clone()]);
+            result
+        }
+        ExprKind::Infix(e1, _op, e2) => {
+            let mut result = extract_divisors(e1)?.clone();
+            result.extend(extract_divisors(e2)?);
+            result
+        }
+        ExprKind::Ite(condition, e1, e2) => {
+            let mut result = extract_divisors(condition)?.clone();
+            result.extend(extract_divisors(e1)?);
+            result.extend(extract_divisors(e2)?);
+            result
+        }
+        ExprKind::Quantifier(_q, _v, _b) => vec![], // we are not sure
+        ExprKind::FunctionCall { fun_name:_, args, function:_} => {
+            let mut args_divisors = vec![];
+            for arg in args {
+                args_divisors.extend(extract_divisors(arg)?);
+            }
+            args_divisors
+        },
+        _ => vec![]
+    })
 }
 
 fn match_to_ivl(body: &Cases, havoc_counter: &mut i32) -> Result<IVLCmd> {
     let first_case = body.cases[0].clone();
-    let cmd_b: IVLCmd = IVLCmd::assume(&first_case.condition).seq(&cmd_to_ivlcmd(&first_case.cmd, havoc_counter)?);
+    let cmd_b: IVLCmd =
+        insert_division_by_zero_assertions(&first_case.condition, &first_case.condition.span)?.seq(
+            &IVLCmd::assume(&first_case.condition).seq(
+                &cmd_to_ivlcmd(&first_case.cmd, havoc_counter)?
+            )
+        );
     if body.cases.len() == 1 {
         return Ok(cmd_b);
     }
     let new_body = Cases{ span: body.span, cases: body.cases[1 .. body.cases.len()].to_vec() };
-    let cmd_not_b: IVLCmd = IVLCmd::assume(&Expr::new_typed(ExprKind::Prefix(PrefixOp::Not,Box::new(first_case.condition.clone())), Type::Bool)).seq(&match_to_ivl(&new_body, havoc_counter)?);
+    let cmd_not_b: IVLCmd = IVLCmd::assume(
+        &Expr::new_typed(ExprKind::Prefix(PrefixOp::Not,Box::new(first_case.condition.clone())), Type::Bool))
+            .seq(&match_to_ivl(&new_body, havoc_counter)?);
     return Ok(cmd_b.nondet(&cmd_not_b));
 }
 

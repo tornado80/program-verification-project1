@@ -57,6 +57,17 @@ impl IVLCmd {
             },
         }
     }
+
+    pub fn assert_with_span(condition: &Expr, message: &str, span: &Span) -> IVLCmd {
+        IVLCmd {
+            span: span.clone(),
+            kind: IVLCmdKind::Assert {
+                condition: condition.clone(),
+                message: message.to_owned(),
+            },
+        }
+    }
+
     pub fn havoc(name: &Name, ty: &Type) -> IVLCmd {
         IVLCmd {
             kind: IVLCmdKind::Havoc {
