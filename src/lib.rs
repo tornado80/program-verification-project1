@@ -26,32 +26,29 @@ impl slang_ui::Hook for App {
             // Convert the expression into an SMT expression
             let spre = pre.smt()?;
             // Assert precondition
+            // Why do we assert the preconditions?
+            // Reason: 
+            // We are interested in the validity of each of the following predicates in the set
+            // because we are "assuming the preconditions":
+            // {pre_condition -> wp_predicate : forall wp_predicate in wp_list(body)[post_conditions]}
+            // However, we check for satifiability of !(precondition -> wp_predicate)
+            // which is equivalent to !(!precondition or wp_predicate) == precondition and !wp_predicate
+            // Therefore we assert the precondition and later on assert the negation of each of the wp_predicate's
             solver.assert(spre.as_bool()?)?;
-
-            // Get method's body
-            let cmd = &m.body.clone().unwrap().cmd;
-
-            let mut havoc_counter = 0;
-            // Encode it in IVL
-            let ivl = cmd_to_ivlcmd(cmd, &mut havoc_counter)?;
-
-            /*
-            let posts = m.ensures();
-            let post = posts
-                .cloned()
-                .reduce(|a, b| a & b)
-                .unwrap_or(Expr::bool(true));
-            // Assert postcondition
-            let spost = post.smt()?;
-            // Assert precondition
-            solver.assert(spost.as_bool()?)?;
-            */
 
             let raw_post_conditions = m.ensures();
             let mut post_conditions = vec![];
             for post_condition in raw_post_conditions {
                 post_conditions.push(WeakestPrecondition { expr: post_condition.clone(), span: post_condition.span, msg: String::from("Ensure might not hold")});
             }
+
+            // Get method's body
+            let cmd = &m.body.clone().unwrap().cmd;
+
+            let mut havoc_counter = 0;
+            // Encode it in IVL
+            let ivl = cmd_to_ivlcmd(cmd, &mut havoc_counter, &post_conditions)?;
+
             // Calculate obligation and error message (if obligation is not
             // verified)
             let wp_list = wp_set(&ivl, post_conditions.clone())?;
@@ -88,7 +85,7 @@ impl slang_ui::Hook for App {
 
 // Encoding of (assert-only) statements into IVL (for programs comprised of only
 // a single assertion)
-fn cmd_to_ivlcmd(cmd: &Cmd, havoc_counter: &mut i32) -> Result<IVLCmd> {
+fn cmd_to_ivlcmd(cmd: &Cmd, havoc_counter: &mut i32, post_conditions: &Vec<WeakestPrecondition>) -> Result<IVLCmd> {
     let &Cmd { kind, span, .. } = &cmd;
     Ok(match kind {
         CmdKind::Assert { condition, message } =>
@@ -96,7 +93,7 @@ fn cmd_to_ivlcmd(cmd: &Cmd, havoc_counter: &mut i32) -> Result<IVLCmd> {
         CmdKind::Assume { condition} =>
             insert_division_by_zero_assertions(condition, span)?.seq(&IVLCmd::assume(condition)),
         CmdKind::Seq(cmd1, cmd2) =>
-            cmd_to_ivlcmd(cmd1, havoc_counter)?.seq(&cmd_to_ivlcmd(cmd2, havoc_counter)?),
+            cmd_to_ivlcmd(cmd1, havoc_counter, &post_conditions)?.seq(&cmd_to_ivlcmd(cmd2, havoc_counter, &post_conditions)?),
         CmdKind::VarDefinition { name, ty:(_, typ) , expr:None  } =>
             havoc_to_ivl(name, typ, havoc_counter),
         CmdKind::VarDefinition { name, ty:_, expr:Some(value)  } =>
@@ -104,8 +101,13 @@ fn cmd_to_ivlcmd(cmd: &Cmd, havoc_counter: &mut i32) -> Result<IVLCmd> {
         CmdKind::Assignment { name, expr } =>
             insert_division_by_zero_assertions(expr, span)?.seq(&IVLCmd::assign(name, expr)),
         CmdKind::Match {body} =>
-            match_to_ivl(body, havoc_counter)?,
-        CmdKind::Return { expr: Some(value) } => IVLCmd::assign(&Name { ident: Ident(String::from("result")), span: span.clone()}, value),
+            match_to_ivl(body, havoc_counter, post_conditions)?,
+        CmdKind::Return { expr: Some(value) } =>
+            insert_division_by_zero_assertions(value, span)?.seq(
+                &IVLCmd::ret_with_expr(value, post_conditions, span)
+            ),
+        CmdKind::Return { expr: None } => IVLCmd::ret(post_conditions, span),
+            // IVLCmd::assign(&Name { ident: Ident(String::from("result")), span: span.clone()}, value),
         _ => todo!("{:#?}", cmd.kind),
     })
 }
@@ -162,12 +164,12 @@ fn extract_divisors(expr: &Expr) -> Result<Vec<Expr>> {
     })
 }
 
-fn match_to_ivl(body: &Cases, havoc_counter: &mut i32) -> Result<IVLCmd> {
+fn match_to_ivl(body: &Cases, havoc_counter: &mut i32, post_conditions: &Vec<WeakestPrecondition>) -> Result<IVLCmd> {
     let first_case = body.cases[0].clone();
     let cmd_b: IVLCmd =
         insert_division_by_zero_assertions(&first_case.condition, &first_case.condition.span)?.seq(
             &IVLCmd::assume(&first_case.condition).seq(
-                &cmd_to_ivlcmd(&first_case.cmd, havoc_counter)?
+                &cmd_to_ivlcmd(&first_case.cmd, havoc_counter, post_conditions)?
             )
         );
     if body.cases.len() == 1 {
@@ -176,7 +178,7 @@ fn match_to_ivl(body: &Cases, havoc_counter: &mut i32) -> Result<IVLCmd> {
     let new_body = Cases{ span: body.span, cases: body.cases[1 .. body.cases.len()].to_vec() };
     let cmd_not_b: IVLCmd = IVLCmd::assume(
         &Expr::new_typed(ExprKind::Prefix(PrefixOp::Not,Box::new(first_case.condition.clone())), Type::Bool))
-            .seq(&match_to_ivl(&new_body, havoc_counter)?);
+            .seq(&match_to_ivl(&new_body, havoc_counter, post_conditions)?);
     return Ok(cmd_b.nondet(&cmd_not_b));
 }
 
@@ -192,8 +194,35 @@ fn wp_set(ivl: &IVLCmd, post_conditions: Vec<WeakestPrecondition>) -> Result<Vec
         IVLCmdKind::Seq(cmd1, cmd2) => wp_set_seq(cmd1, cmd2, post_conditions),
         IVLCmdKind::Assignment { name, expr } => wp_set_assignment(name, expr, post_conditions),
         IVLCmdKind::NonDet(cmd1, cmd2) => wp_set_nondet(cmd1, cmd2, post_conditions),
+        IVLCmdKind::Return {expr, method_post_conditions} =>
+            wp_set_return(expr, method_post_conditions),
+
         _ => todo!("Not supported in wp (yet)."),
     }
+}
+
+fn wp_set_return(expr: &Option<Expr>, method_post_conditions: &Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
+    // we model the return with the following:
+    // return expr
+    // assert method_post_conditions[result <- expr]
+    // assume false (we just ignore post_conditions and consider )
+
+    let mut pre_conditions = vec![];
+    for method_post_condition in method_post_conditions {
+        // The span which is taken is quite complex, expr is the return statement but it is replaced in the ensure expression
+        let replaced = match expr {
+            Some(e) => &replace_result_in_expression(&method_post_condition.expr, e),
+            None => &method_post_condition.expr
+        };
+        pre_conditions.extend(
+            wp_set_assert(
+                replaced,
+                &String::from("Return might not comply with ensures"),
+                pre_conditions.clone()
+            )?
+        )
+    }
+    Ok(pre_conditions)
 }
 
 fn wp_set_nondet(cmd1: &Box<IVLCmd>, cmd2: &Box<IVLCmd>, post_condition: Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
@@ -222,10 +251,10 @@ fn wp_set_seq(cmd1: &Box<IVLCmd>, cmd2: &Box<IVLCmd>, post_condition: Vec<Weakes
     return Ok(wp_set1);
 }
 
-fn wp_set_assignment(identifier: &Name, indentifier_value: &Expr, conditions: Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
+fn wp_set_assignment(identifier: &Name, identifier_value: &Expr, conditions: Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
     let mut updated_conditions: Vec<WeakestPrecondition> = vec![];
     for WeakestPrecondition { expr, span, msg } in conditions {
-        let new_condition = replace_in_expression(&expr, identifier, indentifier_value);
+        let new_condition = replace_in_expression(&expr, identifier, identifier_value);
         updated_conditions.push(WeakestPrecondition { expr: new_condition, span: span, msg: msg });
     }
     return Ok(updated_conditions);
@@ -246,6 +275,26 @@ fn replace_in_expression(origin_expression: &Expr, identifier: &Name, identifier
                 *op, 
                 Box::new(replace_in_expression(rhs, identifier, identifier_value))
             ), 
+            origin_expression.ty.clone()),
+        _ => origin_expression.clone(),
+    }
+}
+
+fn replace_result_in_expression(origin_expression: &Expr, replace_expression: &Expr) -> Expr {
+    match &origin_expression.kind {
+        ExprKind::Result => replace_expression.clone(),
+        ExprKind::Prefix(op, expr) => Expr::new_typed(
+            ExprKind::Prefix(
+                *op,
+                Box::new(replace_result_in_expression(expr, replace_expression))
+            ),
+            origin_expression.ty.clone()),
+        ExprKind::Infix(lhs, op, rhs) => Expr::new_typed(
+            ExprKind::Infix(
+                Box::new(replace_result_in_expression(lhs, replace_expression)),
+                *op,
+                Box::new(replace_result_in_expression(rhs, replace_expression))
+            ),
             origin_expression.ty.clone()),
         _ => origin_expression.clone(),
     }

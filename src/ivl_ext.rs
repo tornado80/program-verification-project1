@@ -4,7 +4,7 @@ use slang::{
 };
 use slang_ui::prelude::*;
 
-use crate::ivl::{IVLCmd, IVLCmdKind};
+use crate::ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
 
 impl IVLCmd {
     pub fn assign(name: &Name, expr: &Expr) -> IVLCmd {
@@ -77,6 +77,27 @@ impl IVLCmd {
             span: Span::default(),
         }
     }
+
+    pub fn ret_with_expr(expr: &Expr, method_post_condition: &Vec<WeakestPrecondition>, span: &Span) -> IVLCmd {
+        IVLCmd {
+            kind: IVLCmdKind::Return {
+                expr: Some(expr.clone()),
+                method_post_conditions: method_post_condition.clone()
+            },
+            span: span.clone()
+        }
+    }
+
+    pub fn ret(method_post_condition: &Vec<WeakestPrecondition>, span: &Span) -> IVLCmd {
+        IVLCmd {
+            kind: IVLCmdKind::Return {
+                expr: None,
+                method_post_conditions: method_post_condition.clone()
+            },
+            span: span.clone()
+        }
+    }
+
     pub fn nop() -> IVLCmd {
         IVLCmd::assume(&Expr::bool(true))
     }
@@ -94,6 +115,7 @@ impl std::fmt::Display for IVLCmd {
             IVLCmdKind::Assert { condition, .. } => write!(f, "assert {condition}"),
             IVLCmdKind::Seq(c1, c2) => write!(f, "{c1} ; {c2}"),
             IVLCmdKind::NonDet(c1, c2) => write!(f, "{{ {c1} }} [] {{ {c2} }}"),
+            IVLCmdKind::Return { .. } => write!(f, "return")
         }
     }
 }
