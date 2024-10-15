@@ -4,7 +4,7 @@ mod ivl_ext;
 use std::vec;
 
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
-use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Ident, Name, Op, Type};
+use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Ident, MethodRef, Name, Op, Type};
 use slang_ui::prelude::*;
 use slang_ui::prelude::slang::ast::{Cases, PrefixOp};
 use slang_ui::prelude::slang::Span;
@@ -106,9 +106,23 @@ fn cmd_to_ivlcmd(cmd: &Cmd, havoc_counter: &mut i32, post_conditions: &Vec<Expr>
                 &IVLCmd::ret_with_expr(value, post_conditions, span)
             ),
         CmdKind::Return { expr: None } => IVLCmd::ret(post_conditions, span),
-            // IVLCmd::assign(&Name { ident: Ident(String::from("result")), span: span.clone()}, value),
+        CmdKind::MethodCall { name, fun_name, args, method } =>
+            method_call_to_ivl(name, fun_name, args, method)?,
         _ => todo!("{:#?}", cmd.kind),
     })
+}
+
+fn method_call_to_ivl(name: &Option<Name>, fun_name: &Name, args: &Vec<Expr>, method: &MethodRef) -> Result<IVLCmd> {
+    // zero divisions assertions
+    let mut result = IVLCmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
+    for arg in args {
+        result = result.seq(&insert_division_by_zero_assertions(arg, &arg.span.clone())?);
+    }
+    let arc = method.get().unwrap();
+    let requires = arc.requires();
+    let ensures = arc.ensures();
+
+    return Ok(result)
 }
 
 fn insert_division_by_zero_assertions(expr: &Expr, span: &Span) -> Result<IVLCmd> {
