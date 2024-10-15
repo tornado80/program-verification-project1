@@ -1,5 +1,6 @@
-method Sum(n: Int) : Int 
+method Sum(n: Int) : Int
     requires n >= 0
+    // @CheckError
     ensures result == (n == 0 ? -1 : n + (n - 1) * (n - 1))
 {
     var sq: Int;
@@ -11,8 +12,7 @@ method Sum(n: Int) : Int
 }
 
 method Square(x: Int) : Int
-    // @CheckError
-    ensures result == x * x
+    ensures result == 2 * x
 {
     return 2 * x
 }

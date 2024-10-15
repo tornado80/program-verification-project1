@@ -1,8 +1,9 @@
 pub mod ivl;
 mod ivl_ext;
 
-use std::vec;
+use std::{vec};
 use uuid::Uuid;
+use std::iter::zip;
 
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
 use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Ident, MethodRef, Name, Op, Type};
@@ -12,9 +13,9 @@ use slang_ui::prelude::slang::Span;
 
 pub struct App;
 
-fn get_fresh_var_name(name: &Name, typ: &Type) -> Expr {
+fn get_fresh_var_name(name: &Name) -> Ident {
     let id = Uuid::new_v4();
-    return Expr::new_typed(ExprKind::Ident(Ident(format!("{}_{}", name.to_string(), id.to_string()).to_string())), typ.clone());
+    return Ident(format!("{}_{}", name.to_string(), id.to_string()).to_string());
 }
 
 impl slang_ui::Hook for App {
@@ -98,7 +99,7 @@ fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
             insert_division_by_zero_assertions(condition, span)?.seq(&IVLCmd::assume(condition)),
         CmdKind::Seq(cmd1, cmd2) =>
             cmd_to_ivlcmd(cmd1, &post_conditions)?.seq(&cmd_to_ivlcmd(cmd2, &post_conditions)?),
-        CmdKind::VarDefinition { name, ty:(_, typ) , expr:None  } =>
+        CmdKind::VarDefinition { name, ty: (_, typ), expr: None } =>
             havoc_to_ivl(name, typ),
         CmdKind::VarDefinition { name, ty:_, expr:Some(value)  } =>
             insert_division_by_zero_assertions(value, span)?.seq(&IVLCmd::assign(name, value)),
@@ -111,22 +112,65 @@ fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
                 &IVLCmd::ret_with_expr(value, post_conditions, span)
             ),
         CmdKind::Return { expr: None } => IVLCmd::ret(post_conditions, span),
-        CmdKind::MethodCall { name, fun_name, args, method } =>
-            method_call_to_ivl(name, fun_name, args, method)?,
+        CmdKind::MethodCall { name, fun_name: _, args, method } =>
+            method_call_to_ivl(name, args, method)?,
         _ => todo!("{:#?}", cmd.kind),
     })
 }
 
-fn method_call_to_ivl(name: &Option<Name>, fun_name: &Name, args: &Vec<Expr>, method: &MethodRef) -> Result<IVLCmd> {
+fn method_call_to_ivl(name: &Option<Name>, args: &Vec<Expr>, method: &MethodRef) -> Result<IVLCmd> {
     // zero divisions assertions
     let mut result = IVLCmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
-    for arg in args {
-        result = result.seq(&insert_division_by_zero_assertions(arg, &arg.span.clone())?);
-    }
     let arc = method.get().unwrap();
-    let requires = arc.requires();
-    let ensures = arc.ensures();
 
+    let mut names_map = vec![];
+    for (arg, var) in zip(args, &arc.args) {
+        result = result.seq(&insert_division_by_zero_assertions(arg, &arg.span.clone())?);
+        let new_name = Name { ident: get_fresh_var_name(&var.name), span: arg.span };
+        result = result.seq(&IVLCmd::assign(&new_name, arg));
+        names_map.push((var.clone(), new_name.ident));
+    }
+
+    // pre-condition of the method
+    let requires = arc.requires();
+
+    for method_pre_condition in requires {
+        let mut updated_pre_cond = method_pre_condition.clone();
+        for (old_var, new_name) in names_map.clone() {
+            updated_pre_cond = replace_in_expression(
+                &updated_pre_cond,
+                &old_var.name,
+                &Expr::new_typed(ExprKind::Ident(new_name), old_var.ty.1)
+            );
+        }
+        result = result.seq(&IVLCmd::assert(&updated_pre_cond, "Requires might not hold"));
+    }
+
+
+    if let Some(name) = name {
+        if let Some((_, return_ty)) = &arc.return_ty {
+            // havoc result variable
+            result = result.seq(&havoc_to_ivl(name, return_ty));
+
+            // post-condition of the method
+            let ensures = arc.ensures();
+            for method_post_condition in ensures {
+                let mut updated_post_cond = method_post_condition.clone();
+                for (old_var, new_name) in names_map.clone() {
+                    updated_post_cond = replace_in_expression(
+                        &updated_post_cond,
+                        &old_var.name,
+                        &Expr::new_typed(ExprKind::Ident(new_name), old_var.ty.1)
+                    );
+                }
+                updated_post_cond = replace_result_in_expression(
+                    &updated_post_cond,
+                    &Expr::new_typed(ExprKind::Ident(name.ident.clone()), return_ty.clone())
+                );
+                result = result.seq(&IVLCmd::assume(&updated_post_cond));
+            }
+        }
+    }
     return Ok(result)
 }
 
@@ -201,7 +245,7 @@ fn match_to_ivl(body: &Cases, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
 }
 
 fn havoc_to_ivl(name: &Name, typ: &Type) -> IVLCmd {
-    return IVLCmd::assign(name, &get_fresh_var_name(name, typ))
+    return IVLCmd::assign(name, &Expr::new_typed(ExprKind::Ident(get_fresh_var_name(name)), typ.clone()));
 }
 
 fn wp_set(ivl: &IVLCmd, post_conditions: Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
