@@ -2,6 +2,7 @@ pub mod ivl;
 mod ivl_ext;
 
 use std::vec;
+use uuid::Uuid;
 
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
 use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Ident, MethodRef, Name, Op, Type};
@@ -10,6 +11,11 @@ use slang_ui::prelude::slang::ast::{Cases, PrefixOp};
 use slang_ui::prelude::slang::Span;
 
 pub struct App;
+
+fn get_fresh_var_name(name: &Name, typ: &Type) -> Expr {
+    let id = Uuid::new_v4();
+    return Expr::new_typed(ExprKind::Ident(Ident(format!("{}_{}", name.to_string(), id.to_string()).to_string())), typ.clone());
+}
 
 impl slang_ui::Hook for App {
     fn analyze(&self, cx: &mut slang_ui::Context, file: &slang::SourceFile) -> Result<()> {
@@ -44,9 +50,8 @@ impl slang_ui::Hook for App {
             // Get method's body
             let cmd = &m.body.clone().unwrap().cmd;
 
-            let mut havoc_counter = 0;
             // Encode it in IVL
-            let ivl = cmd_to_ivlcmd(cmd, &mut havoc_counter, &post_conditions)?;
+            let ivl = cmd_to_ivlcmd(cmd, &post_conditions)?;
 
             // Calculate obligation and error message (if obligation is not
             // verified)
@@ -84,7 +89,7 @@ impl slang_ui::Hook for App {
 
 // Encoding of (assert-only) statements into IVL (for programs comprised of only
 // a single assertion)
-fn cmd_to_ivlcmd(cmd: &Cmd, havoc_counter: &mut i32, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
+fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
     let &Cmd { kind, span, .. } = &cmd;
     Ok(match kind {
         CmdKind::Assert { condition, message } =>
@@ -92,15 +97,15 @@ fn cmd_to_ivlcmd(cmd: &Cmd, havoc_counter: &mut i32, post_conditions: &Vec<Expr>
         CmdKind::Assume { condition} =>
             insert_division_by_zero_assertions(condition, span)?.seq(&IVLCmd::assume(condition)),
         CmdKind::Seq(cmd1, cmd2) =>
-            cmd_to_ivlcmd(cmd1, havoc_counter, &post_conditions)?.seq(&cmd_to_ivlcmd(cmd2, havoc_counter, &post_conditions)?),
+            cmd_to_ivlcmd(cmd1, &post_conditions)?.seq(&cmd_to_ivlcmd(cmd2, &post_conditions)?),
         CmdKind::VarDefinition { name, ty:(_, typ) , expr:None  } =>
-            havoc_to_ivl(name, typ, havoc_counter),
+            havoc_to_ivl(name, typ),
         CmdKind::VarDefinition { name, ty:_, expr:Some(value)  } =>
             insert_division_by_zero_assertions(value, span)?.seq(&IVLCmd::assign(name, value)),
         CmdKind::Assignment { name, expr } =>
             insert_division_by_zero_assertions(expr, span)?.seq(&IVLCmd::assign(name, expr)),
         CmdKind::Match {body} =>
-            match_to_ivl(body, havoc_counter, post_conditions)?,
+            match_to_ivl(body, post_conditions)?,
         CmdKind::Return { expr: Some(value) } =>
             insert_division_by_zero_assertions(value, span)?.seq(
                 &IVLCmd::ret_with_expr(value, post_conditions, span)
@@ -177,12 +182,12 @@ fn extract_divisors(expr: &Expr) -> Result<Vec<Expr>> {
     })
 }
 
-fn match_to_ivl(body: &Cases, havoc_counter: &mut i32, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
+fn match_to_ivl(body: &Cases, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
     let first_case = body.cases[0].clone();
     let cmd_b: IVLCmd =
         insert_division_by_zero_assertions(&first_case.condition, &first_case.condition.span)?.seq(
             &IVLCmd::assume(&first_case.condition).seq(
-                &cmd_to_ivlcmd(&first_case.cmd, havoc_counter, &post_conditions)?
+                &cmd_to_ivlcmd(&first_case.cmd, &post_conditions)?
             )
         );
     if body.cases.len() == 1 {
@@ -191,13 +196,12 @@ fn match_to_ivl(body: &Cases, havoc_counter: &mut i32, post_conditions: &Vec<Exp
     let new_body = Cases{ span: body.span, cases: body.cases[1 .. body.cases.len()].to_vec() };
     let cmd_not_b: IVLCmd = IVLCmd::assume(
         &Expr::new_typed(ExprKind::Prefix(PrefixOp::Not,Box::new(first_case.condition.clone())), Type::Bool))
-            .seq(&match_to_ivl(&new_body, havoc_counter, post_conditions)?);
+            .seq(&match_to_ivl(&new_body, post_conditions)?);
     return Ok(cmd_b.nondet(&cmd_not_b));
 }
 
-fn havoc_to_ivl(name: &Name, typ: &Type, havoc_counter: &mut i32) -> IVLCmd {
-    *havoc_counter += 1;
-    return IVLCmd::assign(name, &Expr::new_typed(ExprKind::Ident(Ident(format!("havoc{0}", havoc_counter).to_string())), typ.clone()))
+fn havoc_to_ivl(name: &Name, typ: &Type) -> IVLCmd {
+    return IVLCmd::assign(name, &get_fresh_var_name(name, typ))
 }
 
 fn wp_set(ivl: &IVLCmd, post_conditions: Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
