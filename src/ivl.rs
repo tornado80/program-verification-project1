@@ -20,7 +20,7 @@ pub enum IVLCmdKind {
 
     Seq(Box<IVLCmd>, Box<IVLCmd>),
     NonDet(Box<IVLCmd>, Box<IVLCmd>),
-    Return { expr: Option<Expr>, method_post_conditions: Vec<WeakestPrecondition> },
+    Return { expr: Option<Expr>, method_post_conditions: Vec<Expr> },
 }
 
 #[derive(Debug, Clone)]

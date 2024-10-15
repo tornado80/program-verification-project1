@@ -4,7 +4,7 @@ use slang::{
 };
 use slang_ui::prelude::*;
 
-use crate::ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
+use crate::ivl::{IVLCmd, IVLCmdKind};
 
 impl IVLCmd {
     pub fn assign(name: &Name, expr: &Expr) -> IVLCmd {
@@ -78,7 +78,7 @@ impl IVLCmd {
         }
     }
 
-    pub fn ret_with_expr(expr: &Expr, method_post_condition: &Vec<WeakestPrecondition>, span: &Span) -> IVLCmd {
+    pub fn ret_with_expr(expr: &Expr, method_post_condition: &Vec<Expr>, span: &Span) -> IVLCmd {
         IVLCmd {
             kind: IVLCmdKind::Return {
                 expr: Some(expr.clone()),
@@ -88,7 +88,7 @@ impl IVLCmd {
         }
     }
 
-    pub fn ret(method_post_condition: &Vec<WeakestPrecondition>, span: &Span) -> IVLCmd {
+    pub fn ret(method_post_condition: &Vec<Expr>, span: &Span) -> IVLCmd {
         IVLCmd {
             kind: IVLCmdKind::Return {
                 expr: None,

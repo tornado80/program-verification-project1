@@ -38,11 +38,8 @@ impl slang_ui::Hook for App {
             // Therefore we assert the precondition and later on assert the negation of each of the wp_predicate's
             solver.assert(spre.as_bool()?)?;
 
-            let raw_post_conditions = m.ensures();
-            let mut post_conditions = vec![];
-            for post_condition in raw_post_conditions {
-                post_conditions.push(WeakestPrecondition { expr: post_condition.clone(), span: post_condition.span, msg: String::from("Ensure might not hold")});
-            }
+
+            let post_conditions = m.ensures().map(|e| e.clone()).collect();
 
             // Get method's body
             let cmd = &m.body.clone().unwrap().cmd;
@@ -87,7 +84,7 @@ impl slang_ui::Hook for App {
 
 // Encoding of (assert-only) statements into IVL (for programs comprised of only
 // a single assertion)
-fn cmd_to_ivlcmd(cmd: &Cmd, havoc_counter: &mut i32, post_conditions: &Vec<WeakestPrecondition>) -> Result<IVLCmd> {
+fn cmd_to_ivlcmd(cmd: &Cmd, havoc_counter: &mut i32, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
     let &Cmd { kind, span, .. } = &cmd;
     Ok(match kind {
         CmdKind::Assert { condition, message } =>
@@ -166,12 +163,12 @@ fn extract_divisors(expr: &Expr) -> Result<Vec<Expr>> {
     })
 }
 
-fn match_to_ivl(body: &Cases, havoc_counter: &mut i32, post_conditions: &Vec<WeakestPrecondition>) -> Result<IVLCmd> {
+fn match_to_ivl(body: &Cases, havoc_counter: &mut i32, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
     let first_case = body.cases[0].clone();
     let cmd_b: IVLCmd =
         insert_division_by_zero_assertions(&first_case.condition, &first_case.condition.span)?.seq(
             &IVLCmd::assume(&first_case.condition).seq(
-                &cmd_to_ivlcmd(&first_case.cmd, havoc_counter, post_conditions)?
+                &cmd_to_ivlcmd(&first_case.cmd, havoc_counter, &post_conditions)?
             )
         );
     if body.cases.len() == 1 {
@@ -197,42 +194,37 @@ fn wp_set(ivl: &IVLCmd, post_conditions: Vec<WeakestPrecondition>) -> Result<Vec
         IVLCmdKind::Assignment { name, expr } => wp_set_assignment(name, expr, post_conditions),
         IVLCmdKind::NonDet(cmd1, cmd2) => wp_set_nondet(cmd1, cmd2, post_conditions),
         IVLCmdKind::Return {expr, method_post_conditions} =>
-            wp_set_return(expr, ivl.span, method_post_conditions),
+            wp_set_return(expr, method_post_conditions),
 
         _ => todo!("Not supported in wp (yet)."),
     }
 }
 
-fn wp_set_return(expr: &Option<Expr>, span:Span, method_post_conditions: &Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
+fn wp_set_return(expr: &Option<Expr>, method_post_conditions: &Vec<Expr>) -> Result<Vec<WeakestPrecondition>> {
     // we model the return with the following:
     // return expr
     // assert method_post_conditions[result <- expr]
     // assume false (we just ignore post_conditions and consider )
 
-    // We want to mark return statements as errors if they break an ensures
-    let return_span = match expr {
-        None => span,
-        Some(value) => value.span,
-    };
-
+    // We want to mark ensures as errors if they do not comply with a return
     let mut pre_conditions = vec![];
     for method_post_condition in method_post_conditions {
-        let contains_result = check_for_result_in_expression(&method_post_condition.expr);
+        let contains_result = check_for_result_in_expression(&method_post_condition);
         if !contains_result {
             continue;
         }
 
         let replaced = match expr {
-            Some(e) => &replace_result_in_expression(&method_post_condition.expr, e),
-            None => &method_post_condition.expr
+            Some(e) => &replace_result_in_expression(&method_post_condition, e),
+            None => &method_post_condition
         };
         let found_conditions = wp_set_assert(
             replaced,
-            &String::from("Return might not comply with ensures"),
+            &String::from("Ensure might not hold"),
             vec![]
         )?;
         for mut condition in found_conditions {
-            condition.span = return_span;
+            condition.span = method_post_condition.span;
             pre_conditions.push(condition.clone());
         }
     }
