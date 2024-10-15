@@ -8,7 +8,7 @@ method Sum(n: Int) : Int
     }
 }
 
-method Sqaure(x: Int) : Int 
+method Square(x: Int) : Int
     // @CheckError
     ensures result == x * x
 {

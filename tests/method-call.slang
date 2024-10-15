@@ -8,7 +8,7 @@ method Sum(n: Int) : Int
     }
 }
 
-method Sqaure(x: Int) : Int 
+method Square(x: Int) : Int
     ensures result == x * x
 {
     return x * x
