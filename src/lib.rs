@@ -1,6 +1,8 @@
 pub mod ivl;
 mod ivl_ext;
 
+use std::vec;
+
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
 use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Ident, Name, Op, Type};
 use slang_ui::prelude::*;
@@ -51,7 +53,7 @@ impl slang_ui::Hook for App {
 
             // Calculate obligation and error message (if obligation is not
             // verified)
-            let wp_list = wp_set(&ivl, post_conditions.clone())?;
+            let wp_list = wp_set(&ivl, vec![])?;
             for WeakestPrecondition{ expr, span, msg } in wp_list {
                 // Convert obligation to SMT expression
                 let soblig = expr.smt()?;
@@ -195,32 +197,44 @@ fn wp_set(ivl: &IVLCmd, post_conditions: Vec<WeakestPrecondition>) -> Result<Vec
         IVLCmdKind::Assignment { name, expr } => wp_set_assignment(name, expr, post_conditions),
         IVLCmdKind::NonDet(cmd1, cmd2) => wp_set_nondet(cmd1, cmd2, post_conditions),
         IVLCmdKind::Return {expr, method_post_conditions} =>
-            wp_set_return(expr, method_post_conditions),
+            wp_set_return(expr, ivl.span, method_post_conditions),
 
         _ => todo!("Not supported in wp (yet)."),
     }
 }
 
-fn wp_set_return(expr: &Option<Expr>, method_post_conditions: &Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
+fn wp_set_return(expr: &Option<Expr>, span:Span, method_post_conditions: &Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
     // we model the return with the following:
     // return expr
     // assert method_post_conditions[result <- expr]
     // assume false (we just ignore post_conditions and consider )
 
+    // We want to mark return statements as errors if they break an ensures
+    let return_span = match expr {
+        None => span,
+        Some(value) => value.span,
+    };
+
     let mut pre_conditions = vec![];
     for method_post_condition in method_post_conditions {
-        // The span which is taken is quite complex, expr is the return statement but it is replaced in the ensure expression
+        let contains_result = check_for_result_in_expression(&method_post_condition.expr);
+        if !contains_result {
+            continue;
+        }
+
         let replaced = match expr {
             Some(e) => &replace_result_in_expression(&method_post_condition.expr, e),
             None => &method_post_condition.expr
         };
-        pre_conditions.extend(
-            wp_set_assert(
-                replaced,
-                &String::from("Return might not comply with ensures"),
-                pre_conditions.clone()
-            )?
-        )
+        let found_conditions = wp_set_assert(
+            replaced,
+            &String::from("Return might not comply with ensures"),
+            vec![]
+        )?;
+        for mut condition in found_conditions {
+            condition.span = return_span;
+            pre_conditions.push(condition.clone());
+        }
     }
     Ok(pre_conditions)
 }
@@ -277,6 +291,18 @@ fn replace_in_expression(origin_expression: &Expr, identifier: &Name, identifier
             ), 
             origin_expression.ty.clone()),
         _ => origin_expression.clone(),
+    }
+}
+
+fn check_for_result_in_expression(origin_expression: &Expr) -> bool {
+    match &origin_expression.kind {
+        ExprKind::Result => true,
+        ExprKind::Prefix(_op, expr) => 
+            check_for_result_in_expression(&expr),
+        ExprKind::Infix(lhs, _op, rhs) => 
+            check_for_result_in_expression(&lhs) 
+            || check_for_result_in_expression(rhs),
+        _ => false,
     }
 }
 
