@@ -115,7 +115,8 @@ impl std::fmt::Display for IVLCmd {
             IVLCmdKind::Assert { condition, .. } => write!(f, "assert {condition}"),
             IVLCmdKind::Seq(c1, c2) => write!(f, "{c1} ; {c2}"),
             IVLCmdKind::NonDet(c1, c2) => write!(f, "{{ {c1} }} [] {{ {c2} }}"),
-            IVLCmdKind::Return { .. } => write!(f, "return")
+            IVLCmdKind::Return { expr: Some(value), .. } => write!(f, "return {{ {value} }}"),
+            IVLCmdKind::Return { expr: None, .. } => write!(f, "return")
         }
     }
 }
