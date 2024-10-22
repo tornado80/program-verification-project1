@@ -40,7 +40,7 @@ impl slang_ui::Hook for App {
             // We are interested in the validity of each of the following predicates in the set
             // because we are "assuming the preconditions":
             // {pre_condition -> wp_predicate : forall wp_predicate in wp_list(body)[post_conditions]}
-            // However, we check for satifiability of !(precondition -> wp_predicate)
+            // However, we check for satisfiability of !(precondition -> wp_predicate)
             // which is equivalent to !(!precondition or wp_predicate) == precondition and !wp_predicate
             // Therefore we assert the precondition and later on assert the negation of each of the wp_predicate's
             solver.assert(spre.as_bool()?)?;
@@ -114,9 +114,13 @@ fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
         CmdKind::Return { expr: None } => IVLCmd::ret(post_conditions, span),
         CmdKind::MethodCall { name, fun_name: _, args, method } =>
             method_call_to_ivl(name, args, method)?,
+       // CmdKind::Loop { invariants , variant: None, body } =>
+       //     loop_to_ivl(invariants, body)?,
         _ => todo!("{:#?}", cmd.kind),
     })
 }
+
+//fn loop
 
 fn method_call_to_ivl(name: &Option<Name>, args: &Vec<Expr>, method: &MethodRef) -> Result<IVLCmd> {
     // zero divisions assertions
@@ -234,13 +238,14 @@ fn match_to_ivl(body: &Cases, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
                 &cmd_to_ivlcmd(&first_case.cmd, &post_conditions)?
             )
         );
+    let assume_not_b = IVLCmd::assume(
+        &Expr::new_typed(ExprKind::Prefix(PrefixOp::Not,Box::new(first_case.condition.clone())), Type::Bool));
+
     if body.cases.len() == 1 {
-        return Ok(cmd_b);
+        return Ok(cmd_b.nondet(&assume_not_b));
     }
     let new_body = Cases{ span: body.span, cases: body.cases[1 .. body.cases.len()].to_vec() };
-    let cmd_not_b: IVLCmd = IVLCmd::assume(
-        &Expr::new_typed(ExprKind::Prefix(PrefixOp::Not,Box::new(first_case.condition.clone())), Type::Bool))
-            .seq(&match_to_ivl(&new_body, post_conditions)?);
+    let cmd_not_b: IVLCmd = assume_not_b.seq(&match_to_ivl(&new_body, post_conditions)?);
     return Ok(cmd_b.nondet(&cmd_not_b));
 }
 
