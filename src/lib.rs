@@ -183,7 +183,7 @@ fn find_modified_variables(cmd: &Cmd) -> Result<Vec<(Name, Type)>> {
             }
             modified_variables
         },
-        _ => todo!("{:#?}", cmd.kind),
+        _ => vec![],
     })
 }
 
