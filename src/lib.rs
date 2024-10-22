@@ -4,11 +4,10 @@ mod ivl_ext;
 use std::{vec};
 use uuid::Uuid;
 use std::iter::zip;
-
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
 use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Ident, MethodRef, Name, Op, Type};
 use slang_ui::prelude::*;
-use slang_ui::prelude::slang::ast::{Cases, PrefixOp};
+use slang_ui::prelude::slang::ast::{Cases, PrefixOp, Case};
 use slang_ui::prelude::slang::Span;
 
 pub struct App;
@@ -114,13 +113,79 @@ fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
         CmdKind::Return { expr: None } => IVLCmd::ret(post_conditions, span),
         CmdKind::MethodCall { name, fun_name: _, args, method } =>
             method_call_to_ivl(name, args, method)?,
-       // CmdKind::Loop { invariants , variant: None, body } =>
-       //     loop_to_ivl(invariants, body)?,
+        CmdKind::Loop { invariants , variant: None, body: cases } =>
+            loop_to_ivl(invariants, cases, &post_conditions)?,
         _ => todo!("{:#?}", cmd.kind),
     })
 }
 
-//fn loop
+fn loop_to_ivl(invariants: &Vec<Expr>, cases: &Cases, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
+    let mut result = IVLCmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
+    let mut assert_seq_cmd = Cmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
+    for invariant in invariants {
+        result = result.seq(&IVLCmd::assert(&invariant, "Invariant might not hold on entry"));
+        assert_seq_cmd = assert_seq_cmd.seq(&Cmd::assert(&invariant, "Invariant might not be preserved"));
+    }
+
+    for case in cases.cases.clone() {
+        let modified_variables = find_modified_variables(&case.cmd)?;
+        for (name, typ) in modified_variables {
+            result = result.seq(&havoc_to_ivl(&name, &typ));
+        }
+    }
+
+    for invariant in invariants {
+        result = result.seq(&IVLCmd::assume(&invariant))
+    }
+
+    let mut new_cases =  vec![];
+
+    for case in cases.cases.clone() {
+        new_cases.push(Case {
+            condition: case.condition,
+            cmd: case.cmd.seq(&assert_seq_cmd).seq(
+                &Cmd::assume(&Expr::new_typed(ExprKind::Bool(false), Type::Bool))
+            )
+        })
+    }
+
+    result = result.seq(&match_to_ivl(&Cases { cases: new_cases.clone(), span: cases.span.clone()}, post_conditions)?);
+
+    return Ok(result);
+}
+
+fn find_modified_variables(cmd: &Cmd) -> Result<Vec<(Name, Type)>> {
+    let &Cmd { kind, .. } = &cmd;
+    Ok(match kind {
+        CmdKind::Seq(cmd1, cmd2) => {
+            [
+                find_modified_variables(&cmd1)?,
+                find_modified_variables(&cmd2)?
+            ].concat()
+        }
+        CmdKind::VarDefinition { name, ty: (_, typ), expr: _ } =>
+            vec![(name.clone(), typ.clone())],
+        CmdKind::Assignment { name, expr } =>
+            vec![(name.clone(), expr.ty.clone())],
+        CmdKind::Match {body} => {
+            let mut modified_variables = vec![];
+            for case in body.cases.clone() {
+                modified_variables.extend(find_modified_variables(&case.cmd)?);
+            }
+            modified_variables
+        }
+        CmdKind::MethodCall { name: Some(return_value), fun_name: _, method, .. } =>
+            vec![(return_value.clone(), method.get().unwrap().return_ty.clone().unwrap().1)],
+        CmdKind::Loop { variant: None, body, .. } => {
+            let mut modified_variables = vec![];
+            for case in body.cases.clone() {
+                modified_variables.extend(find_modified_variables(&case.cmd)?);
+            }
+            modified_variables
+        },
+        _ => todo!("{:#?}", cmd.kind),
+    })
+}
 
 fn method_call_to_ivl(name: &Option<Name>, args: &Vec<Expr>, method: &MethodRef) -> Result<IVLCmd> {
     // zero divisions assertions
@@ -271,7 +336,7 @@ fn wp_set_return(expr: &Option<Expr>, method_post_conditions: &Vec<Expr>) -> Res
     // we model the return with the following:
     // return expr
     // assert method_post_conditions[result <- expr]
-    // assume false (we just ignore post_conditions and consider )
+    // assume false (we just ignore post_conditions and consider method post conditions)
 
     // We want to mark ensures as errors if they do not comply with a return
     let mut pre_conditions = vec![];
