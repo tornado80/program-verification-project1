@@ -93,7 +93,7 @@ fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
     let &Cmd { kind, span, .. } = &cmd;
     Ok(match kind {
         CmdKind::Assert { condition, message } =>
-            insert_division_by_zero_assertions(condition, span)?.seq(&IVLCmd::assert(condition, message)),
+            IVLCmd::assert(condition, message),
         CmdKind::Assume { condition} =>
             insert_division_by_zero_assertions(condition, span)?.seq(&IVLCmd::assume(condition)),
         CmdKind::Seq(cmd1, cmd2) =>
