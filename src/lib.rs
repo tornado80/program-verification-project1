@@ -2,6 +2,7 @@ pub mod ivl;
 mod ivl_ext;
 
 use std::{vec};
+use std::collections::HashMap;
 use uuid::Uuid;
 use std::iter::zip;
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
@@ -12,9 +13,9 @@ use slang_ui::prelude::slang::Span;
 
 pub struct App;
 
-fn get_fresh_var_name(name: &Name) -> Ident {
+fn get_fresh_var_name(ident: &Ident) -> Ident {
     let id = Uuid::new_v4();
-    return Ident(format!("{}_{}", name.to_string(), id.to_string()).to_string());
+    return Ident(format!("{}_{}", ident.0, id.to_string()).to_string());
 }
 
 impl slang_ui::Hook for App {
@@ -53,9 +54,11 @@ impl slang_ui::Hook for App {
             // Encode it in IVL
             let ivl = cmd_to_ivlcmd(cmd, &post_conditions)?;
 
+            let dsa = ivl_to_dsa(&ivl, &mut HashMap::new())?;
+
             // Calculate obligation and error message (if obligation is not
             // verified)
-            let wp_list = wp_set(&ivl, vec![])?;
+            let wp_list = wp_set(&dsa, vec![])?;
             for WeakestPrecondition{ expr, span, msg } in wp_list {
                 // Convert obligation to SMT expression
                 let soblig = expr.smt()?;
@@ -84,6 +87,131 @@ impl slang_ui::Hook for App {
         }
 
         Ok(())
+    }
+}
+
+fn ivl_to_dsa(ivl: &IVLCmd, varmap: &mut HashMap<Ident, (Ident, Type)>) -> Result<IVLCmd> {
+    match &ivl.kind {
+        IVLCmdKind::Assignment { name, expr } => {
+            // if there is any identifier in expr, replace them with the ones in map
+            let idents = extract_names_from_expression(expr);
+            let mut dsa = expr.clone();
+            for (ident, _) in idents {
+                if let Some((replace, ty)) = varmap.get(&ident).cloned() {
+                    dsa = replace_in_expression(&dsa, &Name::ident(ident), &Expr::new_typed(ExprKind::Ident(replace), ty));
+                }
+            }
+            // get new ident for name and update it in the map
+            let new_ident = get_fresh_var_name(&name.ident);
+            varmap.insert(name.ident.clone(), (new_ident.clone(), expr.ty.clone()));
+            // assume new_ident == dsa
+            Ok(IVLCmd::assume(
+                &Expr::new_typed(
+                    ExprKind::Infix(
+                        Box::new(Expr::new_typed(ExprKind::Ident(new_ident), expr.ty.clone())),
+                        Op::Eq,
+                        Box::new(dsa)
+                    ),
+                    Type::Bool
+                )
+            ))
+        },
+        IVLCmdKind::NonDet(ivl1, ivl2) => {
+            let mut map1 = varmap.clone();
+            let mut branch1 = ivl_to_dsa(ivl1, &mut map1)?;
+            let mut map2 = varmap.clone();
+            let mut branch2 = ivl_to_dsa(ivl2, &mut map2)?;
+            // synchronize branches
+            for (ident, (ver, ty)) in map1.clone() {
+                if map2.contains_key(&ident) {
+                    let new_ident = get_fresh_var_name(&ident);
+                    varmap.insert(ident.clone(), (new_ident.clone(), ty.clone()));
+                    branch1 = branch1.seq(&IVLCmd::assume(
+                        &Expr::new_typed(
+                            ExprKind::Infix(
+                                Box::new(Expr::new_typed(ExprKind::Ident(new_ident), ty.clone())),
+                                Op::Eq,
+                                Box::new(Expr::new_typed(ExprKind::Ident(ver), ty.clone()))
+                            ),
+                            Type::Bool
+                        )
+                    ))
+                } else {
+                    let new_ident = get_fresh_var_name(&ident);
+                    branch2 = branch2.seq(&IVLCmd::assume(
+                        &Expr::new_typed(
+                            ExprKind::Infix(
+                                Box::new(Expr::new_typed(ExprKind::Ident(ident), ty.clone())),
+                                Op::Eq,
+                                Box::new(Expr::new_typed(ExprKind::Ident(new_ident), ty.clone()))
+                            ),
+                            Type::Bool
+                        )
+                    ))
+                }
+            }
+            for (ident, (ver, ty)) in map2 {
+                if map1.contains_key(&ident) {
+                    if let Some((new_ident, _)) = varmap.get(&ident) {
+                        branch2 = branch2.seq(&IVLCmd::assume(
+                            &Expr::new_typed(
+                                ExprKind::Infix(
+                                    Box::new(Expr::new_typed(ExprKind::Ident(new_ident.clone()), ty.clone())),
+                                    Op::Eq,
+                                    Box::new(Expr::new_typed(ExprKind::Ident(ver), ty.clone()))
+                                ),
+                                Type::Bool
+                            )
+                        ))
+                    }
+                } else {
+                    let new_ident = get_fresh_var_name(&ident);
+                    branch1 = branch1.seq(&IVLCmd::assume(
+                        &Expr::new_typed(
+                            ExprKind::Infix(
+                                Box::new(Expr::new_typed(ExprKind::Ident(ident), ty.clone())),
+                                Op::Eq,
+                                Box::new(Expr::new_typed(ExprKind::Ident(new_ident), ty.clone()))
+                            ),
+                            Type::Bool
+                        )
+                    ))
+                }
+            }
+            Ok(branch1.nondet(&branch2))
+        },
+        IVLCmdKind::Seq(ivl1, ivl2) => {
+            Ok(ivl_to_dsa(ivl1, varmap)?.seq(&ivl_to_dsa(ivl2, varmap)?))
+        },
+        IVLCmdKind::Assert { .. } => Ok(ivl.clone()),
+        IVLCmdKind::Assume { .. } => Ok(ivl.clone()),
+        _ => panic!("Expected Assignment, NonDet, Seq, Assert, or Assume!")
+    }
+}
+
+fn extract_names_from_expression(expr: &Expr) -> Vec<(Ident, Type)> {
+    match &expr.kind {
+        ExprKind::Ident(id) => vec![(id.clone(), expr.clone().ty)],
+        ExprKind::Infix(e1, _, e2) =>
+            [
+                extract_names_from_expression(e1),
+                extract_names_from_expression(e2)
+            ].concat(),
+        ExprKind::Prefix(_, e) => extract_names_from_expression(e),
+        ExprKind::Ite(e1, e2, e3) =>
+            [
+                extract_names_from_expression(e1),
+                extract_names_from_expression(e2),
+                extract_names_from_expression(e3),
+            ].concat(),
+        ExprKind::FunctionCall { args, .. } => {
+            let mut result = vec![];
+            for arg in args {
+                result.push(extract_names_from_expression(arg));
+            }
+            result.concat()
+        },
+        _ => vec![]
     }
 }
 
@@ -290,7 +418,7 @@ fn method_call_to_ivl(name: &Option<Name>, args: &Vec<Expr>, method: &MethodRef)
     let mut names_map = vec![];
     for (arg, var) in zip(args, &arc.args) {
         result = result.seq(&insert_division_by_zero_assertions(arg, &arg.span.clone())?);
-        let new_name = Name { ident: get_fresh_var_name(&var.name), span: arg.span };
+        let new_name = Name { ident: get_fresh_var_name(&var.name.ident), span: arg.span };
         result = result.seq(&IVLCmd::assign(&new_name, arg));
         names_map.push((var.clone(), new_name.ident));
     }
@@ -433,7 +561,7 @@ fn match_to_ivl(body: &Cases, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
 }
 
 fn havoc_to_ivl(name: &Name, typ: &Type) -> IVLCmd {
-    return IVLCmd::assign(name, &Expr::new_typed(ExprKind::Ident(get_fresh_var_name(name)), typ.clone()));
+    return IVLCmd::assign(name, &Expr::new_typed(ExprKind::Ident(get_fresh_var_name(&name.ident)), typ.clone()));
 }
 
 fn wp_set(ivl: &IVLCmd, post_conditions: Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
@@ -441,9 +569,8 @@ fn wp_set(ivl: &IVLCmd, post_conditions: Vec<WeakestPrecondition>) -> Result<Vec
         IVLCmdKind::Assert { condition, message } => wp_set_assert(condition, message, post_conditions),
         IVLCmdKind::Assume { condition } => wp_set_assume(condition, post_conditions),
         IVLCmdKind::Seq(cmd1, cmd2) => wp_set_seq(cmd1, cmd2, post_conditions),
-        IVLCmdKind::Assignment { name, expr } => wp_set_assignment(name, expr, post_conditions),
         IVLCmdKind::NonDet(cmd1, cmd2) => wp_set_nondet(cmd1, cmd2, post_conditions),
-        _ => todo!("Not supported in wp (yet)."),
+        _ => todo!("Expected Assert, Assume, Seq, or NonDet!"),
     }
 }
 
@@ -473,14 +600,6 @@ fn wp_set_seq(cmd1: &Box<IVLCmd>, cmd2: &Box<IVLCmd>, post_condition: Vec<Weakes
     return Ok(wp_set1);
 }
 
-fn wp_set_assignment(identifier: &Name, identifier_value: &Expr, conditions: Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
-    let mut updated_conditions: Vec<WeakestPrecondition> = vec![];
-    for WeakestPrecondition { expr, span, msg } in conditions {
-        let new_condition = replace_in_expression(&expr, identifier, identifier_value);
-        updated_conditions.push(WeakestPrecondition { expr: new_condition, span: span, msg: msg });
-    }
-    return Ok(updated_conditions);
-}
 // f (e, i, v) -> e[i <- v]
 fn replace_in_expression(origin_expression: &Expr, identifier: &Name, identifier_value: &Expr) -> Expr {
     match &origin_expression.kind {
