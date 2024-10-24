@@ -251,11 +251,7 @@ fn insert_division_by_zero_assertions(expr: &Expr, span: &Span) -> Result<IVLCmd
     }
     for divisor in divisors {
         assertion = assertion.seq(&IVLCmd::assert_with_span(
-            &Expr::new_typed(ExprKind::Infix(
-                Box::new(divisor),
-                Op::Ne,
-                Box::new(Expr::new_typed(ExprKind::Num(0), Type::Int))
-            ), Type::Bool),
+            &divisor,
             "Possible division by zero!",
             &span)
         );
@@ -269,7 +265,16 @@ fn extract_divisors(expr: &Expr) -> Result<Vec<Expr>> {
         ExprKind::Infix(e1, op, e2) if op.clone() == Op::Div => {
             let mut result = extract_divisors(e1)?.clone();
             result.extend(extract_divisors(e2)?);
-            result.extend(vec![*e2.clone()]);
+            result.push(
+                Expr::new_typed(
+                    ExprKind::Infix(
+                        e2.clone(),
+                        Op::Ne,
+                        Box::new(Expr::new_typed(ExprKind::Num(0), Type::Int))
+                    ),
+                Type::Bool
+                )
+            );
             result
         }
         ExprKind::Infix(e1, _op, e2) => {
@@ -279,8 +284,27 @@ fn extract_divisors(expr: &Expr) -> Result<Vec<Expr>> {
         }
         ExprKind::Ite(condition, e1, e2) => {
             let mut result = extract_divisors(condition)?.clone();
-            result.extend(extract_divisors(e1)?);
-            result.extend(extract_divisors(e2)?);
+            let left = extract_divisors(e1)?;
+            for expr in left {
+                result.push(
+                    Expr::new_typed(
+                        ExprKind::Infix(condition.clone(), Op::Imp, Box::new(expr)),
+                         Type::Bool
+                    )
+                );
+            }
+
+            let right = extract_divisors(e2)?;
+            for expr in right {
+                result.push(
+                    Expr::new_typed(
+                    ExprKind::Infix(
+                        Box::new(Expr::new_typed(ExprKind::Prefix(PrefixOp::Not, condition.clone()), Type::Bool)),
+                        Op::Imp,
+                        Box::new(expr)),
+                    Type::Bool)
+                );
+            }
             result
         }
         ExprKind::Quantifier(_q, _v, _b) => vec![], // we are not sure
