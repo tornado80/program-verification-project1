@@ -5,7 +5,7 @@ use std::{vec};
 use uuid::Uuid;
 use std::iter::zip;
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
-use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Ident, MethodRef, Name, Op, Quantifier, Type};
+use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Ident, MethodRef, Name, Op, Type};
 use slang_ui::prelude::*;
 use slang_ui::prelude::slang::ast::{Cases, PrefixOp, Case};
 use slang_ui::prelude::slang::Span;
