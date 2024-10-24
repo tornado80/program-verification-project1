@@ -244,7 +244,7 @@ fn method_call_to_ivl(name: &Option<Name>, args: &Vec<Expr>, method: &MethodRef)
 }
 
 fn insert_division_by_zero_assertions(expr: &Expr, span: &Span) -> Result<IVLCmd> {
-    let divisors = extract_divisors(expr)?;
+    let divisors = extract_division_assertions(expr)?;
     let mut assertion = IVLCmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
     if divisors.is_empty() {
         return Ok(assertion.clone());
@@ -259,12 +259,12 @@ fn insert_division_by_zero_assertions(expr: &Expr, span: &Span) -> Result<IVLCmd
     return Ok(assertion);
 }
 
-fn extract_divisors(expr: &Expr) -> Result<Vec<Expr>> {
+fn extract_division_assertions(expr: &Expr) -> Result<Vec<Expr>> {
     Ok(match &expr.kind {
-        ExprKind::Prefix(_op, e) => extract_divisors(e)?,
+        ExprKind::Prefix(_op, e) => extract_division_assertions(e)?,
         ExprKind::Infix(e1, op, e2) if op.clone() == Op::Div => {
-            let mut result = extract_divisors(e1)?.clone();
-            result.extend(extract_divisors(e2)?);
+            let mut result = extract_division_assertions(e1)?.clone();
+            result.extend(extract_division_assertions(e2)?);
             result.push(
                 Expr::new_typed(
                     ExprKind::Infix(
@@ -278,13 +278,13 @@ fn extract_divisors(expr: &Expr) -> Result<Vec<Expr>> {
             result
         }
         ExprKind::Infix(e1, _op, e2) => {
-            let mut result = extract_divisors(e1)?.clone();
-            result.extend(extract_divisors(e2)?);
+            let mut result = extract_division_assertions(e1)?.clone();
+            result.extend(extract_division_assertions(e2)?);
             result
         }
         ExprKind::Ite(condition, e1, e2) => {
-            let mut result = extract_divisors(condition)?.clone();
-            let left = extract_divisors(e1)?;
+            let mut result = extract_division_assertions(condition)?.clone();
+            let left = extract_division_assertions(e1)?;
             for expr in left {
                 result.push(
                     Expr::new_typed(
@@ -294,7 +294,7 @@ fn extract_divisors(expr: &Expr) -> Result<Vec<Expr>> {
                 );
             }
 
-            let right = extract_divisors(e2)?;
+            let right = extract_division_assertions(e2)?;
             for expr in right {
                 result.push(
                     Expr::new_typed(
@@ -307,11 +307,12 @@ fn extract_divisors(expr: &Expr) -> Result<Vec<Expr>> {
             }
             result
         }
-        ExprKind::Quantifier(_q, _v, _b) => vec![], // we are not sure
+        ExprKind::Quantifier(_q, _v, expr) => 
+            return extract_division_assertions(expr),
         ExprKind::FunctionCall { fun_name:_, args, function:_} => {
             let mut args_divisors = vec![];
             for arg in args {
-                args_divisors.extend(extract_divisors(arg)?);
+                args_divisors.extend(extract_division_assertions(arg)?);
             }
             args_divisors
         },
