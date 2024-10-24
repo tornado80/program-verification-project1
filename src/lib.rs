@@ -5,7 +5,7 @@ use std::{vec};
 use uuid::Uuid;
 use std::iter::zip;
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
-use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Ident, MethodRef, Name, Op, Type};
+use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Ident, MethodRef, Name, Op, Quantifier, Type};
 use slang_ui::prelude::*;
 use slang_ui::prelude::slang::ast::{Cases, PrefixOp, Case};
 use slang_ui::prelude::slang::Span;
@@ -307,8 +307,6 @@ fn extract_division_assertions(expr: &Expr) -> Result<Vec<Expr>> {
             }
             result
         }
-        ExprKind::Quantifier(_q, _v, expr) => 
-            return extract_division_assertions(expr),
         ExprKind::FunctionCall { fun_name:_, args, function:_} => {
             let mut args_divisors = vec![];
             for arg in args {
@@ -457,6 +455,8 @@ fn check_for_result_in_expression(origin_expression: &Expr) -> bool {
         ExprKind::Infix(lhs, _op, rhs) => 
             check_for_result_in_expression(&lhs) 
             || check_for_result_in_expression(rhs),
+        ExprKind::Quantifier(_quantifier, _vars, expr) => 
+            check_for_result_in_expression(&expr),
         _ => false,
     }
 }
@@ -475,6 +475,13 @@ fn replace_result_in_expression(origin_expression: &Expr, replace_expression: &E
                 Box::new(replace_result_in_expression(lhs, replace_expression)),
                 *op,
                 Box::new(replace_result_in_expression(rhs, replace_expression))
+            ),
+            origin_expression.ty.clone()),
+        ExprKind::Quantifier(quantifier, vars, expr) => Expr::new_typed(
+            ExprKind::Quantifier(
+                quantifier.clone(),
+                vars.clone(),
+                Box::new(replace_result_in_expression(expr, replace_expression))
             ),
             origin_expression.ty.clone()),
         _ => origin_expression.clone(),
