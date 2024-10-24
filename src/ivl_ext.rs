@@ -78,26 +78,6 @@ impl IVLCmd {
         }
     }
 
-    pub fn ret_with_expr(expr: &Expr, method_post_condition: &Vec<Expr>, span: &Span) -> IVLCmd {
-        IVLCmd {
-            kind: IVLCmdKind::Return {
-                expr: Some(expr.clone()),
-                method_post_conditions: method_post_condition.clone()
-            },
-            span: span.clone()
-        }
-    }
-
-    pub fn ret(method_post_condition: &Vec<Expr>, span: &Span) -> IVLCmd {
-        IVLCmd {
-            kind: IVLCmdKind::Return {
-                expr: None,
-                method_post_conditions: method_post_condition.clone()
-            },
-            span: span.clone()
-        }
-    }
-
     pub fn nop() -> IVLCmd {
         IVLCmd::assume(&Expr::bool(true))
     }
@@ -114,9 +94,7 @@ impl std::fmt::Display for IVLCmd {
             IVLCmdKind::Assume { condition } => write!(f, "assume {condition}"),
             IVLCmdKind::Assert { condition, .. } => write!(f, "assert {condition}"),
             IVLCmdKind::Seq(c1, c2) => write!(f, "{c1} ; {c2}"),
-            IVLCmdKind::NonDet(c1, c2) => write!(f, "{{ {c1} }} [] {{ {c2} }}"),
-            IVLCmdKind::Return { expr: Some(value), .. } => write!(f, "return {{ {value} }}"),
-            IVLCmdKind::Return { expr: None, .. } => write!(f, "return")
+            IVLCmdKind::NonDet(c1, c2) => write!(f, "{{ {c1} }} [] {{ {c2} }}")
         }
     }
 }

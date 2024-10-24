@@ -100,23 +100,46 @@ fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
             cmd_to_ivlcmd(cmd1, &post_conditions)?.seq(&cmd_to_ivlcmd(cmd2, &post_conditions)?),
         CmdKind::VarDefinition { name, ty: (_, typ), expr: None } =>
             havoc_to_ivl(name, typ),
-        CmdKind::VarDefinition { name, ty:_, expr:Some(value)  } =>
+        CmdKind::VarDefinition { name, expr:Some(value), ..  } =>
             insert_division_by_zero_assertions(value, span)?.seq(&IVLCmd::assign(name, value)),
         CmdKind::Assignment { name, expr } =>
             insert_division_by_zero_assertions(expr, span)?.seq(&IVLCmd::assign(name, expr)),
         CmdKind::Match {body} =>
             match_to_ivl(body, post_conditions)?,
-        CmdKind::Return { expr: Some(value) } =>
+        CmdKind::Return { expr: Some(value)} =>
             insert_division_by_zero_assertions(value, span)?.seq(
-                &IVLCmd::ret_with_expr(value, post_conditions, span)
+                &return_to_ivl(Some(value), post_conditions)?
             ),
-        CmdKind::Return { expr: None } => IVLCmd::ret(post_conditions, span),
-        CmdKind::MethodCall { name, fun_name: _, args, method } =>
+        CmdKind::Return { expr: None } =>
+            return_to_ivl(None, post_conditions)?,
+        CmdKind::MethodCall { name, args, method, .. } =>
             method_call_to_ivl(name, args, method)?,
         CmdKind::Loop { invariants , variant: None, body: cases } =>
             loop_to_ivl(invariants, cases, &post_conditions)?,
         _ => todo!("{:#?}", cmd.kind),
     })
+}
+
+fn return_to_ivl(expr: Option<&Expr>, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
+    // we model the return with the following:
+    // assert method_post_conditions[result <- expr]
+    // assume false
+    let mut result = IVLCmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
+    match expr {
+        Some(return_value) => {
+            for post_condition in post_conditions {
+                let replaced = replace_result_in_expression(post_condition, return_value);
+                result = result.seq(&IVLCmd::assert(&replaced, "Ensure might not hold"))
+            }
+        }
+        None => {
+            for post_condition in post_conditions {
+                result = result.seq(&IVLCmd::assert(post_condition, "Ensure might not hold"))
+            }
+        }
+    }
+    result = result.seq(&IVLCmd::assume(&Expr::new_typed(ExprKind::Bool(false), Type::Bool)));
+    return Ok(result)
 }
 
 fn loop_to_ivl(invariants: &Vec<Expr>, cases: &Cases, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
@@ -348,42 +371,8 @@ fn wp_set(ivl: &IVLCmd, post_conditions: Vec<WeakestPrecondition>) -> Result<Vec
         IVLCmdKind::Seq(cmd1, cmd2) => wp_set_seq(cmd1, cmd2, post_conditions),
         IVLCmdKind::Assignment { name, expr } => wp_set_assignment(name, expr, post_conditions),
         IVLCmdKind::NonDet(cmd1, cmd2) => wp_set_nondet(cmd1, cmd2, post_conditions),
-        IVLCmdKind::Return {expr, method_post_conditions} =>
-            wp_set_return(expr, method_post_conditions),
-
         _ => todo!("Not supported in wp (yet)."),
     }
-}
-
-fn wp_set_return(expr: &Option<Expr>, method_post_conditions: &Vec<Expr>) -> Result<Vec<WeakestPrecondition>> {
-    // we model the return with the following:
-    // return expr
-    // assert method_post_conditions[result <- expr]
-    // assume false (we just ignore post_conditions and consider method post conditions)
-
-    // We want to mark ensures as errors if they do not comply with a return
-    let mut pre_conditions = vec![];
-    for method_post_condition in method_post_conditions {
-        let contains_result = check_for_result_in_expression(&method_post_condition);
-        if !contains_result {
-            continue;
-        }
-
-        let replaced = match expr {
-            Some(e) => &replace_result_in_expression(&method_post_condition, e),
-            None => &method_post_condition
-        };
-        let found_conditions = wp_set_assert(
-            replaced,
-            &String::from("Ensure might not hold"),
-            vec![]
-        )?;
-        for mut condition in found_conditions {
-            condition.span = method_post_condition.span;
-            pre_conditions.push(condition.clone());
-        }
-    }
-    Ok(pre_conditions)
 }
 
 fn wp_set_nondet(cmd1: &Box<IVLCmd>, cmd2: &Box<IVLCmd>, post_condition: Vec<WeakestPrecondition>) -> Result<Vec<WeakestPrecondition>> {
@@ -444,20 +433,6 @@ fn replace_in_expression(origin_expression: &Expr, identifier: &Name, identifier
             return replace_in_expression(expr, identifier, identifier_value)
         } 
         _ => origin_expression.clone(),
-    }
-}
-
-fn check_for_result_in_expression(origin_expression: &Expr) -> bool {
-    match &origin_expression.kind {
-        ExprKind::Result => true,
-        ExprKind::Prefix(_op, expr) => 
-            check_for_result_in_expression(&expr),
-        ExprKind::Infix(lhs, _op, rhs) => 
-            check_for_result_in_expression(&lhs) 
-            || check_for_result_in_expression(rhs),
-        ExprKind::Quantifier(_quantifier, _vars, expr) => 
-            check_for_result_in_expression(&expr),
-        _ => false,
     }
 }
 
