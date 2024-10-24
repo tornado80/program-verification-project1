@@ -439,6 +439,12 @@ fn replace_in_expression(origin_expression: &Expr, identifier: &Name, identifier
                 Box::new(replace_in_expression(rhs, identifier, identifier_value))
             ), 
             origin_expression.ty.clone()),
+        ExprKind::Quantifier(_quantifier, variables, expr) => {
+            if (variables.into_iter().map(|x| x.name.ident.0.clone()).collect::<String>()).contains(&identifier.ident.0) {
+                return origin_expression.clone();
+            }
+            return replace_in_expression(expr, identifier, identifier_value)
+        } 
         _ => origin_expression.clone(),
     }
 }
