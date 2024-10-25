@@ -152,8 +152,8 @@ fn bounded_to_ivl(name: &Name, start: &Expr, end: &Expr, body: &Block, post_cond
         panic!("Start value is higher than end value");
     }
 
-    let translated_body = cmd_to_ivlcmd(&body.cmd, post_conditions)?;
     let mut result = IVLCmd::assign(name, &Expr::new_typed(ExprKind::Num(start_value), Type::Int));
+    let translated_body = cmd_to_ivlcmd(&body.cmd, post_conditions)?;
     for i in 0..(end_value - start_value) {
         result = result.seq(&translated_body);
         result = result.seq(&IVLCmd::assign(name, &Expr::new_typed(ExprKind::Num(start_value + i + 1), Type::Int)));
@@ -162,8 +162,21 @@ fn bounded_to_ivl(name: &Name, start: &Expr, end: &Expr, body: &Block, post_cond
     return Ok(result);
 }
 
-fn unbounded_to_ivl(name: &Name, start: &Expr, end: &Expr, invariants: &Vec<Expr>, variant: &Option<Expr>, body: &Block, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
-    todo!("Unbounded yet supported");
+fn unbounded_to_ivl(name: &Name, start: &Expr, end: &Expr, invariants: &Vec<Expr>, _variant: &Option<Expr>, body: &Block, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
+    let iterator_invariant = Expr::new_typed(ExprKind::Infix(Box::new(Expr::new_typed(ExprKind::Ident(name.ident.clone()), Type::Int)), Op::Le, Box::new(end.clone())), Type::Bool);
+
+    let for_condition = Expr::new_typed(ExprKind::Infix(Box::new(Expr::new_typed(ExprKind::Ident(name.ident.clone()), Type::Int)), Op::Lt, Box::new(end.clone())), Type::Bool);
+    let iterator_increase = Cmd::assign(name, &Expr::new_typed(ExprKind::Infix(Box::new(Expr::ident(&name.ident, &Type::Int)), Op::Add, Box::new(Expr::new_typed(ExprKind::Num(1), Type::Int))), Type::Int));
+    let body_as_cases = Cases { span: body.span, cases: vec![Case { condition: for_condition, cmd: (*body.cmd.clone()).seq(&iterator_increase) } ] };
+
+    let mut combined_invariants = invariants.clone();
+    combined_invariants.push(iterator_invariant.clone());
+    let translation_to_loop = loop_to_ivl(&combined_invariants, &body_as_cases, &post_conditions)?;
+
+    return Ok(
+        IVLCmd::assign(name, start)
+        .seq(&translation_to_loop)
+    );
 }
 
 fn return_to_ivl(expr: Option<&Expr>, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
