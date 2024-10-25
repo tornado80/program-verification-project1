@@ -114,8 +114,8 @@ fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
             return_to_ivl(None, post_conditions)?,
         CmdKind::MethodCall { name, args, method, .. } =>
             method_call_to_ivl(name, args, method)?,
-        CmdKind::Loop { invariants , variant: None, body: cases } =>
-            loop_to_ivl(invariants, cases, &post_conditions)?,
+        CmdKind::Loop { invariants , variant, body: cases } =>
+            loop_to_ivl(invariants,variant, cases, &post_conditions)?,
         CmdKind::For { name, range, invariants, variant, body } =>
             for_to_vl(name, range, invariants, variant, body, post_conditions)?,
         _ => todo!("{:#?}", cmd.kind),
@@ -162,7 +162,7 @@ fn bounded_to_ivl(name: &Name, start: &Expr, end: &Expr, body: &Block, post_cond
     return Ok(result);
 }
 
-fn unbounded_to_ivl(name: &Name, start: &Expr, end: &Expr, invariants: &Vec<Expr>, _variant: &Option<Expr>, body: &Block, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
+fn unbounded_to_ivl(name: &Name, start: &Expr, end: &Expr, invariants: &Vec<Expr>, variant: &Option<Expr>, body: &Block, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
     let iterator_invariant = Expr::new_typed(ExprKind::Infix(Box::new(Expr::new_typed(ExprKind::Ident(name.ident.clone()), Type::Int)), Op::Le, Box::new(end.clone())), Type::Bool);
 
     let for_condition = Expr::new_typed(ExprKind::Infix(Box::new(Expr::new_typed(ExprKind::Ident(name.ident.clone()), Type::Int)), Op::Lt, Box::new(end.clone())), Type::Bool);
@@ -171,7 +171,7 @@ fn unbounded_to_ivl(name: &Name, start: &Expr, end: &Expr, invariants: &Vec<Expr
 
     let mut combined_invariants = invariants.clone();
     combined_invariants.push(iterator_invariant.clone());
-    let translation_to_loop = loop_to_ivl(&combined_invariants, &body_as_cases, &post_conditions)?;
+    let translation_to_loop = loop_to_ivl(&combined_invariants, variant, &body_as_cases, &post_conditions)?;
 
     return Ok(
         IVLCmd::assign(name, start)
@@ -201,7 +201,7 @@ fn return_to_ivl(expr: Option<&Expr>, post_conditions: &Vec<Expr>) -> Result<IVL
     return Ok(result)
 }
 
-fn loop_to_ivl(invariants: &Vec<Expr>, cases: &Cases, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
+fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
     let mut result = IVLCmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
     let mut assert_seq_cmd = Cmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
     for invariant in invariants {
@@ -220,13 +220,26 @@ fn loop_to_ivl(invariants: &Vec<Expr>, cases: &Cases, post_conditions: &Vec<Expr
         result = result.seq(&IVLCmd::assume(&invariant))
     }
 
-    let mut new_cases =  vec![];
+    let variant_assertion = match variant {
+        Some(variant_expr) => {
+            let variant_name = get_fresh_var_name(&Name { span: variant_expr.span, ident: Ident(String::from("variant")) });
+            let variant_assignment = IVLCmd::assign(&Name { span: variant_expr.span, ident: variant_name.clone() }, variant_expr);
+            let variant_base = Expr::new_typed(ExprKind::Infix(Box::new(Expr::ident(&variant_name.clone(), &Type::Int)), Op::Ge, Box::new(Expr::num(0))), Type::Bool);
+            result = result.seq(&variant_assignment).seq(&IVLCmd::assert(&variant_base, "Variant might not always be >= 0"));
+            Cmd::assert(&Expr::new_typed(ExprKind::Infix(Box::new(variant_expr.clone()), Op::Lt, Box::new(Expr::ident(&variant_name, &Type::Int))), Type::Bool), "Variant might not hold")
+        },
+        _ => Cmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "We do not have a variant")
+    };
 
+    let mut new_cases =  vec![];
     for case in cases.cases.clone() {
         new_cases.push(Case {
             condition: case.condition,
-            cmd: case.cmd.seq(&assert_seq_cmd).seq(
-                &Cmd::assume(&Expr::new_typed(ExprKind::Bool(false), Type::Bool))
+            cmd: 
+                case.cmd
+                .seq(&assert_seq_cmd)
+                .seq(&variant_assertion)
+                .seq(&Cmd::assume(&Expr::new_typed(ExprKind::Bool(false), Type::Bool)) // We need to ignore the post condition
             )
         })
     }
