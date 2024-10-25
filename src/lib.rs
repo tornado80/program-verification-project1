@@ -74,6 +74,7 @@ impl slang_ui::Hook for App {
                         // If the obligations result not valid, report the error (on
                         // the span in which the error happens)
                         smtlib::SatResult::Sat => {
+                            //println!("{}", format!("expr: {expr} span_start: {}  span_end: {}", span.start(), span.end()));
                             cx.error(span, format!("{msg}"));
                         }
                         smtlib::SatResult::Unknown => {
@@ -94,26 +95,14 @@ fn ivl_to_dsa(ivl: &IVLCmd, varmap: &mut HashMap<Ident, (Ident, Type)>) -> Resul
     match &ivl.kind {
         IVLCmdKind::Assignment { name, expr } => {
             // if there is any identifier in expr, replace them with the ones in map
-            let idents = extract_names_from_expression(expr);
-            let mut dsa = expr.clone();
-            for (ident, _) in idents {
-                if let Some((replace, ty)) = varmap.get(&ident).cloned() {
-                    dsa = replace_in_expression(&dsa, &Name::ident(ident), &Expr::new_typed(ExprKind::Ident(replace), ty));
-                }
-            }
+            let dsa = replace_identifiers_with_recent_names_in_varmap(expr, varmap);
             // get new ident for name and update it in the map
             let new_ident = get_fresh_var_name(&name.ident);
             varmap.insert(name.ident.clone(), (new_ident.clone(), expr.ty.clone()));
             // assume new_ident == dsa
-            Ok(IVLCmd::assume(
-                &Expr::new_typed(
-                    ExprKind::Infix(
-                        Box::new(Expr::new_typed(ExprKind::Ident(new_ident), expr.ty.clone())),
-                        Op::Eq,
-                        Box::new(dsa)
-                    ),
-                    Type::Bool
-                )
+            Ok(assume_equality(
+                &Expr::new_typed(ExprKind::Ident(new_ident), expr.ty.clone()),
+                &dsa
             ))
         },
         IVLCmdKind::NonDet(ivl1, ivl2) => {
@@ -126,55 +115,31 @@ fn ivl_to_dsa(ivl: &IVLCmd, varmap: &mut HashMap<Ident, (Ident, Type)>) -> Resul
                 if map2.contains_key(&ident) {
                     let new_ident = get_fresh_var_name(&ident);
                     varmap.insert(ident.clone(), (new_ident.clone(), ty.clone()));
-                    branch1 = branch1.seq(&IVLCmd::assume(
-                        &Expr::new_typed(
-                            ExprKind::Infix(
-                                Box::new(Expr::new_typed(ExprKind::Ident(new_ident), ty.clone())),
-                                Op::Eq,
-                                Box::new(Expr::new_typed(ExprKind::Ident(ver), ty.clone()))
-                            ),
-                            Type::Bool
-                        )
+                    branch1 = branch1.seq(&assume_equality(
+                        &Expr::new_typed(ExprKind::Ident(new_ident), ty.clone()),
+                        &Expr::new_typed(ExprKind::Ident(ver), ty.clone())
                     ))
                 } else {
                     let new_ident = get_fresh_var_name(&ident);
-                    branch2 = branch2.seq(&IVLCmd::assume(
-                        &Expr::new_typed(
-                            ExprKind::Infix(
-                                Box::new(Expr::new_typed(ExprKind::Ident(ident), ty.clone())),
-                                Op::Eq,
-                                Box::new(Expr::new_typed(ExprKind::Ident(new_ident), ty.clone()))
-                            ),
-                            Type::Bool
-                        )
+                    branch2 = branch2.seq(&assume_equality(
+                        &Expr::new_typed(ExprKind::Ident(ident), ty.clone()),
+                        &Expr::new_typed(ExprKind::Ident(new_ident), ty.clone())
                     ))
                 }
             }
             for (ident, (ver, ty)) in map2 {
                 if map1.contains_key(&ident) {
                     if let Some((new_ident, _)) = varmap.get(&ident) {
-                        branch2 = branch2.seq(&IVLCmd::assume(
-                            &Expr::new_typed(
-                                ExprKind::Infix(
-                                    Box::new(Expr::new_typed(ExprKind::Ident(new_ident.clone()), ty.clone())),
-                                    Op::Eq,
-                                    Box::new(Expr::new_typed(ExprKind::Ident(ver), ty.clone()))
-                                ),
-                                Type::Bool
-                            )
+                        branch2 = branch2.seq(&assume_equality(
+                            &Expr::new_typed(ExprKind::Ident(new_ident.clone()), ty.clone()),
+                            &Expr::new_typed(ExprKind::Ident(ver), ty.clone())
                         ))
                     }
                 } else {
                     let new_ident = get_fresh_var_name(&ident);
-                    branch1 = branch1.seq(&IVLCmd::assume(
-                        &Expr::new_typed(
-                            ExprKind::Infix(
-                                Box::new(Expr::new_typed(ExprKind::Ident(ident), ty.clone())),
-                                Op::Eq,
-                                Box::new(Expr::new_typed(ExprKind::Ident(new_ident), ty.clone()))
-                            ),
-                            Type::Bool
-                        )
+                    branch1 = branch1.seq(&assume_equality(
+                        &Expr::new_typed(ExprKind::Ident(ident), ty.clone()),
+                        &Expr::new_typed(ExprKind::Ident(new_ident), ty.clone())
                     ))
                 }
             }
@@ -183,33 +148,83 @@ fn ivl_to_dsa(ivl: &IVLCmd, varmap: &mut HashMap<Ident, (Ident, Type)>) -> Resul
         IVLCmdKind::Seq(ivl1, ivl2) => {
             Ok(ivl_to_dsa(ivl1, varmap)?.seq(&ivl_to_dsa(ivl2, varmap)?))
         },
-        IVLCmdKind::Assert { .. } => Ok(ivl.clone()),
-        IVLCmdKind::Assume { .. } => Ok(ivl.clone()),
+        IVLCmdKind::Assert { condition, message } => {
+            let dsa = replace_identifiers_with_recent_names_in_varmap(condition, varmap);
+            Ok(IVLCmd::assert(&dsa, message))
+        },
+        IVLCmdKind::Assume { condition } => {
+            let dsa = replace_identifiers_with_recent_names_in_varmap(condition, varmap);
+            Ok(IVLCmd::assume(&dsa))
+        },
         _ => panic!("Expected Assignment, NonDet, Seq, Assert, or Assume!")
     }
 }
 
-fn extract_names_from_expression(expr: &Expr) -> Vec<(Ident, Type)> {
+fn assume_equality(expr1: &Expr, expr2: &Expr) -> IVLCmd {
+    IVLCmd::assume(
+        &Expr::new_typed(
+            ExprKind::Infix(
+                Box::new(expr1.clone()),
+                Op::Eq,
+                Box::new(expr2.clone())
+            ),
+            Type::Bool
+        )
+    )
+}
+
+fn replace_identifiers_with_recent_names_in_varmap(expr: &Expr, varmap: &HashMap<Ident, (Ident, Type)>) -> Expr {
+    let idents = extract_identifiers_from_expression(expr, vec![]);
+    let mut dsa = expr.clone();
+    for (ident, _ , span) in idents {
+        if let Some((replace, ty)) = varmap.get(&ident).cloned() {
+            dsa = replace_in_expression(
+                &dsa,
+                &Name::ident(ident),
+                &Expr::new_typed(ExprKind::Ident(replace), ty.clone()),
+            );
+        }
+    }
+    dsa.span = expr.span;
+    dsa
+}
+
+fn extract_identifiers_from_expression(expr: &Expr, ignored_quantified_identifiers: Vec<Ident>) -> Vec<(Ident, Type, Span)> {
     match &expr.kind {
-        ExprKind::Ident(id) => vec![(id.clone(), expr.clone().ty)],
+        ExprKind::Ident(id) => {
+            if ignored_quantified_identifiers.contains(id) {
+                vec![]
+            } else {
+                vec![(id.clone(), expr.clone().ty, expr.span)]
+            }
+        },
         ExprKind::Infix(e1, _, e2) =>
             [
-                extract_names_from_expression(e1),
-                extract_names_from_expression(e2)
+                extract_identifiers_from_expression(e1, ignored_quantified_identifiers.clone()),
+                extract_identifiers_from_expression(e2, ignored_quantified_identifiers.clone())
             ].concat(),
-        ExprKind::Prefix(_, e) => extract_names_from_expression(e),
+        ExprKind::Prefix(_, e) =>
+            extract_identifiers_from_expression(e, ignored_quantified_identifiers.clone()),
         ExprKind::Ite(e1, e2, e3) =>
             [
-                extract_names_from_expression(e1),
-                extract_names_from_expression(e2),
-                extract_names_from_expression(e3),
+                extract_identifiers_from_expression(e1, ignored_quantified_identifiers.clone()),
+                extract_identifiers_from_expression(e2, ignored_quantified_identifiers.clone()),
+                extract_identifiers_from_expression(e3, ignored_quantified_identifiers.clone()),
             ].concat(),
         ExprKind::FunctionCall { args, .. } => {
             let mut result = vec![];
             for arg in args {
-                result.push(extract_names_from_expression(arg));
+                result.push(extract_identifiers_from_expression(
+                    arg, ignored_quantified_identifiers.clone()));
             }
             result.concat()
+        },
+        ExprKind::Quantifier(q, vars, e) => {
+            let mut ignored_quantified_identifiers = ignored_quantified_identifiers.clone();
+            for var in vars {
+                ignored_quantified_identifiers.push(var.name.ident.clone())
+            }
+            extract_identifiers_from_expression(e, ignored_quantified_identifiers)
         },
         _ => vec![]
     }
@@ -315,16 +330,20 @@ fn return_to_ivl(expr: Option<&Expr>, post_conditions: &Vec<Expr>) -> Result<IVL
     match expr {
         Some(return_value) => {
             for post_condition in post_conditions {
-                let replaced = replace_result_in_expression(post_condition, return_value);
+                let mut replaced = replace_result_in_expression(post_condition, return_value);
+                replaced.span = post_condition.span;
+                // assert method_post_conditions[result <- expr]
                 result = result.seq(&IVLCmd::assert(&replaced, "Ensure might not hold"))
             }
         }
         None => {
             for post_condition in post_conditions {
+                // assert method_post_conditions
                 result = result.seq(&IVLCmd::assert(post_condition, "Ensure might not hold"))
             }
         }
     }
+    // assume false
     result = result.seq(&IVLCmd::assume(&Expr::new_typed(ExprKind::Bool(false), Type::Bool)));
     return Ok(result)
 }
@@ -435,6 +454,7 @@ fn method_call_to_ivl(name: &Option<Name>, args: &Vec<Expr>, method: &MethodRef)
                 &Expr::new_typed(ExprKind::Ident(new_name), old_var.ty.1)
             );
         }
+        updated_pre_cond.span = method_pre_condition.span;
         result = result.seq(&IVLCmd::assert(&updated_pre_cond, "Requires might not hold"));
     }
 
@@ -601,33 +621,35 @@ fn wp_set_seq(cmd1: &Box<IVLCmd>, cmd2: &Box<IVLCmd>, post_condition: Vec<Weakes
 }
 
 // f (e, i, v) -> e[i <- v]
-fn replace_in_expression(origin_expression: &Expr, identifier: &Name, identifier_value: &Expr) -> Expr {
-    match &origin_expression.kind {
-        ExprKind::Ident(name) if name.0 == identifier.ident.0 => identifier_value.clone(),
+fn replace_in_expression(original_expression: &Expr, identifier: &Name, replace_with_identifier: &Expr) -> Expr {
+    match &original_expression.kind {
+        ExprKind::Ident(name) if name.0 == identifier.ident.0 => replace_with_identifier.clone(),
         ExprKind::Prefix(op, expr) => Expr::new_typed(
             ExprKind::Prefix(
                 *op, 
-                Box::new(replace_in_expression(expr, identifier, identifier_value))
-            ), 
-            origin_expression.ty.clone()),
+                Box::new(replace_in_expression(expr, identifier, replace_with_identifier))
+            ),
+            original_expression.ty.clone()),
         ExprKind::Infix(lhs, op, rhs) => Expr::new_typed(
             ExprKind::Infix(
-                Box::new(replace_in_expression(lhs, identifier, identifier_value)), 
+                Box::new(replace_in_expression(lhs, identifier, replace_with_identifier)),
                 *op, 
-                Box::new(replace_in_expression(rhs, identifier, identifier_value))
-            ), 
-            origin_expression.ty.clone()),
+                Box::new(replace_in_expression(rhs, identifier, replace_with_identifier))
+            ),
+            original_expression.ty.clone()),
         ExprKind::Quantifier(_quantifier, variables, expr) => {
             if (variables.into_iter().map(|x| x.name.ident.0.clone()).collect::<String>()).contains(&identifier.ident.0) {
-                return origin_expression.clone();
+                return original_expression.clone();
             }
-            return replace_in_expression(expr, identifier, identifier_value)
+            return replace_in_expression(expr, identifier, replace_with_identifier)
         } 
-        _ => origin_expression.clone(),
+        _ => original_expression.clone(),
     }
 }
 
 fn replace_result_in_expression(origin_expression: &Expr, replace_expression: &Expr) -> Expr {
+    // callers of this function should be aware that the span of expression might be messed up
+    // TODO: make sure of above
     match &origin_expression.kind {
         ExprKind::Result => replace_expression.clone(),
         ExprKind::Prefix(op, expr) => Expr::new_typed(
