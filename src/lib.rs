@@ -185,7 +185,6 @@ fn replace_identifiers_with_recent_names_in_varmap(expr: &Expr, varmap: &HashMap
             );
         }
     }
-    dsa.span = expr.span;
     dsa
 }
 
@@ -331,7 +330,6 @@ fn return_to_ivl(expr: Option<&Expr>, post_conditions: &Vec<Expr>) -> Result<IVL
         Some(return_value) => {
             for post_condition in post_conditions {
                 let mut replaced = replace_result_in_expression(post_condition, return_value);
-                replaced.span = post_condition.span;
                 // assert method_post_conditions[result <- expr]
                 result = result.seq(&IVLCmd::assert(&replaced, "Ensure might not hold"))
             }
@@ -454,7 +452,6 @@ fn method_call_to_ivl(name: &Option<Name>, args: &Vec<Expr>, method: &MethodRef)
                 &Expr::new_typed(ExprKind::Ident(new_name), old_var.ty.1)
             );
         }
-        updated_pre_cond.span = method_pre_condition.span;
         result = result.seq(&IVLCmd::assert(&updated_pre_cond, "Requires might not hold"));
     }
 
@@ -622,7 +619,7 @@ fn wp_set_seq(cmd1: &Box<IVLCmd>, cmd2: &Box<IVLCmd>, post_condition: Vec<Weakes
 
 // f (e, i, v) -> e[i <- v]
 fn replace_in_expression(original_expression: &Expr, identifier: &Name, replace_with_identifier: &Expr) -> Expr {
-    match &original_expression.kind {
+    let mut result = match &original_expression.kind {
         ExprKind::Ident(name) if name.0 == identifier.ident.0 => replace_with_identifier.clone(),
         ExprKind::Prefix(op, expr) => Expr::new_typed(
             ExprKind::Prefix(
@@ -644,34 +641,36 @@ fn replace_in_expression(original_expression: &Expr, identifier: &Name, replace_
             return replace_in_expression(expr, identifier, replace_with_identifier)
         } 
         _ => original_expression.clone(),
-    }
+    };
+    result.span = original_expression.span;
+    result
 }
 
-fn replace_result_in_expression(origin_expression: &Expr, replace_expression: &Expr) -> Expr {
-    // callers of this function should be aware that the span of expression might be messed up
-    // TODO: make sure of above
-    match &origin_expression.kind {
+fn replace_result_in_expression(original_expression: &Expr, replace_expression: &Expr) -> Expr {
+    let mut result = match &original_expression.kind {
         ExprKind::Result => replace_expression.clone(),
         ExprKind::Prefix(op, expr) => Expr::new_typed(
             ExprKind::Prefix(
                 *op,
                 Box::new(replace_result_in_expression(expr, replace_expression))
             ),
-            origin_expression.ty.clone()),
+            original_expression.ty.clone()),
         ExprKind::Infix(lhs, op, rhs) => Expr::new_typed(
             ExprKind::Infix(
                 Box::new(replace_result_in_expression(lhs, replace_expression)),
                 *op,
                 Box::new(replace_result_in_expression(rhs, replace_expression))
             ),
-            origin_expression.ty.clone()),
+            original_expression.ty.clone()),
         ExprKind::Quantifier(quantifier, vars, expr) => Expr::new_typed(
             ExprKind::Quantifier(
                 quantifier.clone(),
                 vars.clone(),
                 Box::new(replace_result_in_expression(expr, replace_expression))
             ),
-            origin_expression.ty.clone()),
-        _ => origin_expression.clone(),
-    }
+            original_expression.ty.clone()),
+        _ => original_expression.clone(),
+    };
+    result.span = original_expression.span;
+    result
 }
