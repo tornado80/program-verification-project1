@@ -5,7 +5,7 @@ use std::{vec};
 use uuid::Uuid;
 use std::iter::zip;
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
-use slang::ast::{Cmd, CmdKind, Expr, ExprKind, Ident, MethodRef, Name, Op, Type};
+use slang::ast::{Block, Cmd, CmdKind, Expr, ExprKind, Ident, MethodRef, Name, Op, Range, Type};
 use slang_ui::prelude::*;
 use slang_ui::prelude::slang::ast::{Cases, PrefixOp, Case};
 use slang_ui::prelude::slang::Span;
@@ -116,8 +116,54 @@ fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
             method_call_to_ivl(name, args, method)?,
         CmdKind::Loop { invariants , variant: None, body: cases } =>
             loop_to_ivl(invariants, cases, &post_conditions)?,
+        CmdKind::For { name, range, invariants, variant, body } =>
+            for_to_vl(name, range, invariants, variant, body, post_conditions)?,
         _ => todo!("{:#?}", cmd.kind),
     })
+}
+
+fn for_to_vl(name: &Name, Range::FromTo(start, end): &Range, invariants: &Vec<Expr>, variant: &Option<Expr>, body: &Block, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
+    let is_bounded = check_if_bounded(start) && check_if_bounded(end);
+    if is_bounded {
+        return bounded_to_ivl(name, start, end, body, post_conditions);
+    } else {
+        return unbounded_to_ivl(name, start, end, invariants, variant, body, post_conditions);
+    }
+}
+
+fn check_if_bounded(expr: &Expr) -> bool {
+    return match expr.kind {
+        ExprKind::Num(_value) => true,
+        _ => false
+    };
+}
+
+fn evaluate_bounded(expr: &Expr) -> i64 {
+    return match expr.kind {
+        ExprKind::Num(value) => value,
+        _ => panic!("Was not bounded!")
+    };
+}
+
+fn bounded_to_ivl(name: &Name, start: &Expr, end: &Expr, body: &Block, post_conditions: &Vec<Expr>) -> Result<IVLCmd>{
+    let start_value = evaluate_bounded(start);
+    let end_value = evaluate_bounded(end);
+    if start_value > end_value {
+        panic!("Start value is higher than end value");
+    }
+
+    let translated_body = cmd_to_ivlcmd(&body.cmd, post_conditions)?;
+    let mut result = IVLCmd::assign(name, &Expr::new_typed(ExprKind::Num(start_value), Type::Int));
+    for i in 0..(end_value - start_value) {
+        result = result.seq(&translated_body);
+        result = result.seq(&IVLCmd::assign(name, &Expr::new_typed(ExprKind::Num(start_value + i + 1), Type::Int)));
+    }
+
+    return Ok(result);
+}
+
+fn unbounded_to_ivl(name: &Name, start: &Expr, end: &Expr, invariants: &Vec<Expr>, variant: &Option<Expr>, body: &Block, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
+    todo!("Unbounded yet supported");
 }
 
 fn return_to_ivl(expr: Option<&Expr>, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
