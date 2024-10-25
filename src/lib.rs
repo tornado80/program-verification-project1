@@ -176,7 +176,7 @@ fn assume_equality(expr1: &Expr, expr2: &Expr) -> IVLCmd {
 fn replace_identifiers_with_recent_names_in_varmap(expr: &Expr, varmap: &HashMap<Ident, (Ident, Type)>) -> Expr {
     let idents = extract_identifiers_from_expression(expr, vec![]);
     let mut dsa = expr.clone();
-    for (ident, _ , span) in idents {
+    for (ident, _) in idents {
         if let Some((replace, ty)) = varmap.get(&ident).cloned() {
             dsa = replace_in_expression(
                 &dsa,
@@ -189,13 +189,13 @@ fn replace_identifiers_with_recent_names_in_varmap(expr: &Expr, varmap: &HashMap
     dsa
 }
 
-fn extract_identifiers_from_expression(expr: &Expr, ignored_quantified_identifiers: Vec<Ident>) -> Vec<(Ident, Type, Span)> {
+fn extract_identifiers_from_expression(expr: &Expr, ignored_quantified_identifiers: Vec<Ident>) -> Vec<(Ident, Type)> {
     match &expr.kind {
         ExprKind::Ident(id) => {
             if ignored_quantified_identifiers.contains(id) {
                 vec![]
             } else {
-                vec![(id.clone(), expr.clone().ty, expr.span)]
+                vec![(id.clone(), expr.clone().ty)]
             }
         },
         ExprKind::Infix(e1, _, e2) =>
@@ -219,7 +219,7 @@ fn extract_identifiers_from_expression(expr: &Expr, ignored_quantified_identifie
             }
             result.concat()
         },
-        ExprKind::Quantifier(q, vars, e) => {
+        ExprKind::Quantifier(_q, vars, e) => {
             let mut ignored_quantified_identifiers = ignored_quantified_identifiers.clone();
             for var in vars {
                 ignored_quantified_identifiers.push(var.name.ident.clone())
@@ -369,7 +369,7 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, po
 
     let variant_assertion = match variant {
         Some(variant_expr) => {
-            let variant_name = get_fresh_var_name(&Name { span: variant_expr.span, ident: Ident(String::from("variant")) });
+            let variant_name = get_fresh_var_name(&Ident(String::from("variant")));
             let variant_assignment = IVLCmd::assign(&Name { span: variant_expr.span, ident: variant_name.clone() }, variant_expr);
             let variant_base = Expr::new_typed(ExprKind::Infix(Box::new(Expr::ident(&variant_name.clone(), &Type::Int)), Op::Ge, Box::new(Expr::num(0))), Type::Bool);
             result = result.seq(&variant_assignment).seq(&IVLCmd::assert(&variant_base, "Variant might not always be >= 0"));
