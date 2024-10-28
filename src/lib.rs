@@ -329,7 +329,7 @@ fn return_to_ivl(expr: Option<&Expr>, post_conditions: &Vec<Expr>) -> Result<IVL
     match expr {
         Some(return_value) => {
             for post_condition in post_conditions {
-                let mut replaced = replace_result_in_expression(post_condition, return_value);
+                let replaced = replace_result_in_expression(post_condition, return_value);
                 // assert method_post_conditions[result <- expr]
                 result = result.seq(&IVLCmd::assert(&replaced, "Ensure might not hold"))
             }
@@ -526,23 +526,27 @@ fn extract_division_assertions(expr: &Expr) -> Result<Vec<Expr>> {
             let mut result = extract_division_assertions(condition)?.clone();
             let left = extract_division_assertions(e1)?;
             for expr in left {
+                let mut new_expr = Expr::new_typed(
+                    ExprKind::Infix(condition.clone(), Op::Imp, Box::new(expr.clone())),
+                    Type::Bool
+                );
+                new_expr.span = expr.span.clone();
                 result.push(
-                    Expr::new_typed(
-                        ExprKind::Infix(condition.clone(), Op::Imp, Box::new(expr)),
-                         Type::Bool
-                    )
+                    new_expr
                 );
             }
 
             let right = extract_division_assertions(e2)?;
             for expr in right {
-                result.push(
-                    Expr::new_typed(
+                let mut new_expr = Expr::new_typed(
                     ExprKind::Infix(
                         Box::new(Expr::new_typed(ExprKind::Prefix(PrefixOp::Not, condition.clone()), Type::Bool)),
                         Op::Imp,
-                        Box::new(expr)),
-                    Type::Bool)
+                        Box::new(expr.clone())),
+                    Type::Bool);
+                new_expr.span = expr.span.clone();
+                result.push(
+                    new_expr
                 );
             }
             result
