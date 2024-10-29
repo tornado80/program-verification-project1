@@ -1,9 +1,10 @@
 pub mod ivl;
 mod ivl_ext;
 
-use std::{vec};
+use std::vec;
 use std::collections::HashMap;
-use uuid::{Uuid};
+use std::env::var;
+use uuid::Uuid;
 use std::iter::zip;
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
 use slang::ast::{Block, Cmd, CmdKind, Expr, ExprKind, Ident, MethodRef, Name, Op, Range, Type};
@@ -282,8 +283,20 @@ fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>, loop_context: &LoopCont
             for_to_ivl(name, range, invariants, variant, body, post_conditions)?,
         CmdKind::Continue =>
             continue_to_ivl(loop_context)?,
+        CmdKind::Break =>
+            break_to_ivl(loop_context)?,
         _ => todo!("{:#?}", cmd.kind),
     })
+}
+
+fn break_to_ivl(loop_context: &LoopContext) -> Result<IVLCmd> {
+    let mut result = IVLCmd::assert(&Expr::bool(true), "Congratulations it couldn't fail!");
+    for invariant in loop_context.clone().invariants {
+        result = result.seq(&IVLCmd::assert(&invariant.clone(), "Invariant might not hold after break"));
+    }
+    result = result.seq(&IVLCmd::assert(&loop_context.variant_assertion, "Variant might not hold after break"));
+    result = result.seq(&IVLCmd::assume(&Expr::bool(false)));
+    Ok(result)
 }
 
 fn continue_to_ivl(loop_context: &LoopContext) -> Result<IVLCmd> {
@@ -401,7 +414,8 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, po
         Some(variant_expr) => {
             let variant_name = get_fresh_var_name(&Ident(String::from("variant")));
             let variant_assignment = IVLCmd::assign(&Name { span: variant_expr.span, ident: variant_name.clone() }, variant_expr);
-            let variant_base = Expr::new_typed(ExprKind::Infix(Box::new(Expr::ident(&variant_name.clone(), &Type::Int)), Op::Ge, Box::new(Expr::num(0))), Type::Bool);
+            let mut variant_base = Expr::new_typed(ExprKind::Infix(Box::new(Expr::ident(&variant_name.clone(), &Type::Int)), Op::Ge, Box::new(Expr::num(0))), Type::Bool);
+            variant_base.span = variant_expr.span.clone();
             result = result.seq(&variant_assignment).seq(&IVLCmd::assert(&variant_base, "Variant might not always be >= 0"));
             &Expr::new_typed(ExprKind::Infix(Box::new(variant_expr.clone()), Op::Lt, Box::new(Expr::ident(&variant_name, &Type::Int))), Type::Bool)
         },
