@@ -291,7 +291,8 @@ fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>, loop_context: &LoopCont
 fn break_to_ivl(loop_context: &LoopContext) -> Result<IVLCmd> {
     let mut result = IVLCmd::assert(&Expr::bool(true), "Congratulations it couldn't fail!");
     for invariant in loop_context.clone().invariants {
-        result = result.seq(&IVLCmd::assert(&invariant.clone(), "Invariant might not hold after break"));
+        let expr_without_broke = replace_broke_in_expression(&invariant.clone(), true);
+        result = result.seq(&IVLCmd::assert(&expr_without_broke, "Invariant might not hold after break"));
     }
     result = result.seq(&IVLCmd::assume(&Expr::bool(false)));
     Ok(result)
@@ -300,11 +301,41 @@ fn break_to_ivl(loop_context: &LoopContext) -> Result<IVLCmd> {
 fn continue_to_ivl(loop_context: &LoopContext) -> Result<IVLCmd> {
     let mut result = IVLCmd::assert(&Expr::bool(true), "Congratulations it couldn't fail!");
     for invariant in loop_context.clone().invariants {
-        result = result.seq(&IVLCmd::assert(&invariant.clone(), "Invariant might not hold after continue"));
+        let expr_without_broke = replace_broke_in_expression(&invariant.clone(), false);
+        result = result.seq(&IVLCmd::assert(&expr_without_broke, "Invariant might not hold after continue"));
     }
     result = result.seq(&IVLCmd::assert(&loop_context.variant_assertion, "Variant might not hold after continue"));
     result = result.seq(&IVLCmd::assume(&Expr::bool(false)));
     Ok(result)
+}
+
+fn replace_broke_in_expression(original_expression: &Expr, replace_value: bool) -> Expr {
+    let mut result = match &original_expression.kind {
+        ExprKind::Broke => Expr::bool(replace_value),
+        ExprKind::Prefix(op, expr) => Expr::new_typed(
+            ExprKind::Prefix(
+                *op,
+                Box::new(replace_broke_in_expression(expr, replace_value))
+            ),
+            original_expression.ty.clone()),
+        ExprKind::Infix(lhs, op, rhs) => Expr::new_typed(
+            ExprKind::Infix(
+                Box::new(replace_broke_in_expression(lhs, replace_value)),
+                *op,
+                Box::new(replace_broke_in_expression(rhs, replace_value))
+            ),
+            original_expression.ty.clone()),
+        ExprKind::Quantifier(quantifier, vars, expr) => Expr::new_typed(
+            ExprKind::Quantifier(
+                quantifier.clone(),
+                vars.clone(),
+                Box::new(replace_broke_in_expression(expr, replace_value))
+            ),
+            original_expression.ty.clone()),
+        _ => original_expression.clone(),
+    };
+    result.span = original_expression.span;
+    result
 }
 
 fn for_to_ivl(name: &Name, Range::FromTo(start, end): &Range, invariants: &Vec<Expr>, variant: &Option<Expr>, body: &Block, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
@@ -393,8 +424,9 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, po
     let mut result = IVLCmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
     let mut assert_seq_cmd = Cmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
     for invariant in invariants {
-        result = result.seq(&IVLCmd::assert(&invariant, "Invariant might not hold on entry"));
-        assert_seq_cmd = assert_seq_cmd.seq(&Cmd::assert(&invariant, "Invariant might not be preserved"));
+        let expr_without_broke = replace_broke_in_expression(invariant, false);
+        result = result.seq(&IVLCmd::assert(&expr_without_broke, "Invariant might not hold on entry"));
+        assert_seq_cmd = assert_seq_cmd.seq(&Cmd::assert(&expr_without_broke, "Invariant might not be preserved"));
     }
 
     for case in cases.cases.clone() {
@@ -405,7 +437,8 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, po
     }
 
     for invariant in invariants {
-        result = result.seq(&IVLCmd::assume(&invariant))
+        let expr_without_broke = replace_broke_in_expression(invariant, false);
+        result = result.seq(&IVLCmd::assume(&expr_without_broke))
     }
 
     let variant_assertion = match variant {
