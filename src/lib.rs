@@ -3,7 +3,7 @@ mod ivl_ext;
 
 use std::{vec};
 use std::collections::HashMap;
-use uuid::Uuid;
+use uuid::{Uuid};
 use std::iter::zip;
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
 use slang::ast::{Block, Cmd, CmdKind, Expr, ExprKind, Ident, MethodRef, Name, Op, Range, Type};
@@ -12,6 +12,21 @@ use slang_ui::prelude::slang::ast::{Cases, PrefixOp, Case};
 use slang_ui::prelude::slang::Span;
 
 pub struct App;
+
+#[derive(Debug, Clone)]
+struct LoopContext {
+    variant_assertion : Expr,
+    invariants: Vec<Expr>,
+}
+
+impl LoopContext {
+    pub fn empty() -> Self {
+        LoopContext {
+            variant_assertion: Expr::bool(true),
+            invariants: Vec::new()
+        }
+    }
+}
 
 fn get_fresh_var_name(ident: &Ident) -> Ident {
     let id = Uuid::new_v4();
@@ -52,7 +67,11 @@ impl slang_ui::Hook for App {
             let cmd = &m.body.clone().unwrap().cmd;
 
             // Encode it in IVL
-            let ivl = cmd_to_ivlcmd(cmd, &post_conditions)?;
+            let ivl = cmd_to_ivlcmd(
+                cmd,
+                &post_conditions,
+                &LoopContext::empty()
+            )?;
 
             let dsa = ivl_to_dsa(&ivl, &mut HashMap::new())?;
 
@@ -231,7 +250,7 @@ fn extract_identifiers_from_expression(expr: &Expr, ignored_quantified_identifie
 
 // Encoding of (assert-only) statements into IVL (for programs comprised of only
 // a single assertion)
-fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
+fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>, loop_context: &LoopContext) -> Result<IVLCmd> {
     let &Cmd { kind, span, .. } = &cmd;
     Ok(match kind {
         CmdKind::Assert { condition, message } =>
@@ -239,7 +258,8 @@ fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
         CmdKind::Assume { condition} =>
             IVLCmd::assume(condition),
         CmdKind::Seq(cmd1, cmd2) =>
-            cmd_to_ivlcmd(cmd1, &post_conditions)?.seq(&cmd_to_ivlcmd(cmd2, &post_conditions)?),
+            cmd_to_ivlcmd(cmd1, &post_conditions, loop_context)?.seq(
+                &cmd_to_ivlcmd(cmd2, &post_conditions, loop_context)?),
         CmdKind::VarDefinition { name, ty: (_, typ), expr: None } =>
             havoc_to_ivl(name, typ),
         CmdKind::VarDefinition { name, expr:Some(value), ..  } =>
@@ -247,7 +267,7 @@ fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
         CmdKind::Assignment { name, expr } =>
             insert_division_by_zero_assertions(expr, span)?.seq(&IVLCmd::assign(name, expr)),
         CmdKind::Match {body} =>
-            match_to_ivl(body, post_conditions)?,
+            match_to_ivl(body, post_conditions, loop_context)?,
         CmdKind::Return { expr: Some(value)} =>
             insert_division_by_zero_assertions(value, span)?.seq(
                 &return_to_ivl(Some(value), post_conditions)?
@@ -259,12 +279,24 @@ fn cmd_to_ivlcmd(cmd: &Cmd, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
         CmdKind::Loop { invariants , variant, body: cases } =>
             loop_to_ivl(invariants,variant, cases, &post_conditions)?,
         CmdKind::For { name, range, invariants, variant, body } =>
-            for_to_vl(name, range, invariants, variant, body, post_conditions)?,
+            for_to_ivl(name, range, invariants, variant, body, post_conditions)?,
+        CmdKind::Continue =>
+            continue_to_ivl(loop_context)?,
         _ => todo!("{:#?}", cmd.kind),
     })
 }
 
-fn for_to_vl(name: &Name, Range::FromTo(start, end): &Range, invariants: &Vec<Expr>, variant: &Option<Expr>, body: &Block, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
+fn continue_to_ivl(loop_context: &LoopContext) -> Result<IVLCmd> {
+    let mut result = IVLCmd::assert(&Expr::bool(true), "Congratulations it couldn't fail!");
+    for invariant in loop_context.clone().invariants {
+        result = result.seq(&IVLCmd::assert(&invariant.clone(), "Invariant might not hold after continue"));
+    }
+    result = result.seq(&IVLCmd::assert(&loop_context.variant_assertion, "Variant might not hold after continue"));
+    result = result.seq(&IVLCmd::assume(&Expr::bool(false)));
+    Ok(result)
+}
+
+fn for_to_ivl(name: &Name, Range::FromTo(start, end): &Range, invariants: &Vec<Expr>, variant: &Option<Expr>, body: &Block, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
     let is_bounded = check_if_bounded(start) && check_if_bounded(end);
     if is_bounded {
         return bounded_to_ivl(name, start, end, body, post_conditions);
@@ -295,7 +327,7 @@ fn bounded_to_ivl(name: &Name, start: &Expr, end: &Expr, body: &Block, post_cond
     }
 
     let mut result = IVLCmd::assign(name, &Expr::new_typed(ExprKind::Num(start_value), Type::Int));
-    let translated_body = cmd_to_ivlcmd(&body.cmd, post_conditions)?;
+    let translated_body = cmd_to_ivlcmd(&body.cmd, post_conditions, &LoopContext::empty())?;
     for i in 0..(end_value - start_value) {
         result = result.seq(&translated_body);
         result = result.seq(&IVLCmd::assign(name, &Expr::new_typed(ExprKind::Num(start_value + i + 1), Type::Int)));
@@ -371,9 +403,9 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, po
             let variant_assignment = IVLCmd::assign(&Name { span: variant_expr.span, ident: variant_name.clone() }, variant_expr);
             let variant_base = Expr::new_typed(ExprKind::Infix(Box::new(Expr::ident(&variant_name.clone(), &Type::Int)), Op::Ge, Box::new(Expr::num(0))), Type::Bool);
             result = result.seq(&variant_assignment).seq(&IVLCmd::assert(&variant_base, "Variant might not always be >= 0"));
-            Cmd::assert(&Expr::new_typed(ExprKind::Infix(Box::new(variant_expr.clone()), Op::Lt, Box::new(Expr::ident(&variant_name, &Type::Int))), Type::Bool), "Variant might not hold")
+            &Expr::new_typed(ExprKind::Infix(Box::new(variant_expr.clone()), Op::Lt, Box::new(Expr::ident(&variant_name, &Type::Int))), Type::Bool)
         },
-        _ => Cmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "We do not have a variant")
+        _ => &Expr::new_typed(ExprKind::Bool(true), Type::Bool)
     };
 
     let mut new_cases =  vec![];
@@ -383,13 +415,20 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, po
             cmd: 
                 case.cmd
                 .seq(&assert_seq_cmd)
-                .seq(&variant_assertion)
+                .seq(&Cmd::assert(variant_assertion, "Variant might not hold"))
                 .seq(&Cmd::assume(&Expr::new_typed(ExprKind::Bool(false), Type::Bool)) // We need to ignore the post condition
             )
         })
     }
 
-    result = result.seq(&match_to_ivl(&Cases { cases: new_cases.clone(), span: cases.span.clone()}, post_conditions)?);
+    result = result.seq(&match_to_ivl(
+        &Cases { cases: new_cases.clone(), span: cases.span.clone()},
+        post_conditions,
+        &LoopContext {
+            invariants: invariants.clone(),
+            variant_assertion: variant_assertion.clone()
+        })?
+    );
 
     return Ok(result);
 }
@@ -510,7 +549,7 @@ fn extract_division_assertions(expr: &Expr) -> Result<Vec<Expr>> {
                     ExprKind::Infix(
                         e2.clone(),
                         Op::Ne,
-                        Box::new(Expr::new_typed(ExprKind::Num(0), Type::Int))
+                        Box::new(Expr::num(0))
                     ),
                 Type::Bool
                 )
@@ -562,12 +601,12 @@ fn extract_division_assertions(expr: &Expr) -> Result<Vec<Expr>> {
     })
 }
 
-fn match_to_ivl(body: &Cases, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
+fn match_to_ivl(body: &Cases, post_conditions: &Vec<Expr>, loop_context: &LoopContext) -> Result<IVLCmd> {
     let first_case = body.cases[0].clone();
     let cmd_b: IVLCmd =
         insert_division_by_zero_assertions(&first_case.condition, &first_case.condition.span)?.seq(
             &IVLCmd::assume(&first_case.condition).seq(
-                &cmd_to_ivlcmd(&first_case.cmd, &post_conditions)?
+                &cmd_to_ivlcmd(&first_case.cmd, &post_conditions, loop_context)?
             )
         );
     let assume_not_b = IVLCmd::assume(
@@ -577,7 +616,7 @@ fn match_to_ivl(body: &Cases, post_conditions: &Vec<Expr>) -> Result<IVLCmd> {
         return Ok(cmd_b.nondet(&assume_not_b));
     }
     let new_body = Cases{ span: body.span, cases: body.cases[1 .. body.cases.len()].to_vec() };
-    let cmd_not_b: IVLCmd = assume_not_b.seq(&match_to_ivl(&new_body, post_conditions)?);
+    let cmd_not_b: IVLCmd = assume_not_b.seq(&match_to_ivl(&new_body, post_conditions, loop_context)?);
     return Ok(cmd_b.nondet(&cmd_not_b));
 }
 
