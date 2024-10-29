@@ -3,7 +3,6 @@ mod ivl_ext;
 
 use std::vec;
 use std::collections::HashMap;
-use std::env::var;
 use uuid::Uuid;
 use std::iter::zip;
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
@@ -294,7 +293,6 @@ fn break_to_ivl(loop_context: &LoopContext) -> Result<IVLCmd> {
     for invariant in loop_context.clone().invariants {
         result = result.seq(&IVLCmd::assert(&invariant.clone(), "Invariant might not hold after break"));
     }
-    result = result.seq(&IVLCmd::assert(&loop_context.variant_assertion, "Variant might not hold after break"));
     result = result.seq(&IVLCmd::assume(&Expr::bool(false)));
     Ok(result)
 }
@@ -435,16 +433,57 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, po
         })
     }
 
-    result = result.seq(&match_to_ivl(
+    let loop_context = &LoopContext {
+        invariants: invariants.clone(),
+        variant_assertion: variant_assertion.clone()
+    };
+
+    let mut body_translation = match_to_ivl(
         &Cases { cases: new_cases.clone(), span: cases.span.clone()},
         post_conditions,
-        &LoopContext {
-            invariants: invariants.clone(),
-            variant_assertion: variant_assertion.clone()
-        })?
-    );
+        loop_context)?;
+
+    // DFS for breaks and chain using none deterministic choices
+    for case in cases.clone().cases {
+        let break_paths = find_break_paths(&case.cmd, IVLCmd::nop(), post_conditions, loop_context)?;
+
+        for break_path in break_paths {
+            body_translation = body_translation.nondet(&break_path)
+        }
+    }
+    
+
+    result = result.seq(&body_translation);
 
     return Ok(result);
+}
+
+fn find_break_paths(command: &Cmd, context: IVLCmd, post_conditions: &Vec<Expr>, loop_context: &LoopContext) -> Result<Vec<IVLCmd>> {
+    return Ok(match &command.kind {
+        CmdKind::Break => vec![context],
+        CmdKind::Seq(cmd1, cmd2) => {
+            let paths_in_cmd1 = find_break_paths(&cmd1, context.clone(), post_conditions, loop_context)?;
+            let cmd1_to_context = cmd_to_ivlcmd(&cmd1, post_conditions, loop_context)?;
+            let paths_in_cmd2 = find_break_paths(&cmd2, context.clone().seq(&cmd1_to_context), post_conditions, loop_context)?;
+            vec![paths_in_cmd1, paths_in_cmd2].concat()
+        }
+        CmdKind::Match { body } => {
+            let mut match_context = context.clone();
+            let mut paths = Vec::new();
+            for case in body.cases.clone() {
+                let ivl_for_condition = IVLCmd::assume(&case.condition);
+                let paths_for_case = find_break_paths(
+                    &case.cmd, 
+                    match_context.seq(&ivl_for_condition), 
+                    post_conditions, 
+                    loop_context)?;
+                paths.extend(paths_for_case);
+                match_context = match_context.seq(&IVLCmd::assume(&Expr::prefix(&case.condition, PrefixOp::Not)));
+            }
+            paths
+        }
+        _ => Vec::new(),
+    });
 }
 
 fn find_modified_variables(cmd: &Cmd) -> Result<Vec<(Name, Type)>> {
