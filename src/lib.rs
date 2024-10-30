@@ -10,6 +10,8 @@ use slang::ast::{Block, Cmd, CmdKind, Expr, ExprKind, Ident, MethodRef, Name, Op
 use slang_ui::prelude::*;
 use slang_ui::prelude::slang::ast::{Cases, PrefixOp, Case};
 use slang_ui::prelude::slang::Span;
+use slang_ui::prelude::smtlib::funs::Fun;
+use slang_ui::prelude::smtlib::sorts::Sort;
 
 pub struct App;
 
@@ -46,6 +48,24 @@ impl slang_ui::Hook for App {
         // Get reference to Z3 solver
         let mut solver = cx.solver()?;
 
+        for d in file.domains() {
+            for f in d.functions() {
+                let mut vars = Vec::new();
+                for arg in &f.args {
+                    vars.push(Sort::new(type_to_string(&arg.ty.1)))
+                }
+                solver.declare_fun(&Fun::new(
+                    f.name.to_string(),
+                    vars,
+                    Sort::new(type_to_string(&f.return_ty.1))
+                ))?
+            }
+
+            for a in d.axioms() {
+                let axiom = a.expr.smt()?;
+                solver.assert(axiom.as_bool()?)?
+            }
+        }
 
         // Iterate methods
         for m in file.methods() {
@@ -84,7 +104,7 @@ impl slang_ui::Hook for App {
             for (name, ty) in m.modifies() {
                 let global_var_old_name = get_fresh_var_name(&name.ident.clone());
                 global_variables_old_values.insert(name.ident.clone(), (global_var_old_name.clone(), ty.clone()));
-                specified_global_variables.insert(name.ident.0.clone());
+                specified_global_variables.insert(name.to_string());
                 ivl = ivl.seq(&IVLCmd::assign(
                     &Name { span: name.span, ident: global_var_old_name },
                     &Expr::ident(&name.ident.clone(), ty)
@@ -170,7 +190,7 @@ impl slang_ui::Hook for App {
                             cx.error(span, format!("{msg}"));
                         }
                         smtlib::SatResult::Unknown => {
-                            cx.warning(span, "{msg}: unknown sat result");
+                            cx.warning(span, format!("{}: unknown sat result", msg));
                         }
                         smtlib::SatResult::Unsat => (),
                     }
@@ -180,6 +200,13 @@ impl slang_ui::Hook for App {
         }
 
         Ok(())
+    }
+}
+
+fn type_to_string(ty: &Type) -> String {
+    match ty {
+        Type::Domain { name, .. } => name.to_string(),
+        t => t.to_string()
     }
 }
 
@@ -196,16 +223,16 @@ fn does_method_modify_unspecified_global_variables(
             does_method_modify_unspecified_global_variables(&c2, specified_global_variables, symbol_table)
         }
         CmdKind::VarDefinition { name, .. } => {
-            symbol_table.insert(name.ident.0.clone());
+            symbol_table.insert(name.to_string());
             None
         }
         CmdKind::Assignment { name, .. } => {
             //println!("Searching for {} in symbol table {:#?}", name, symbol_table);
-            if symbol_table.contains(&name.ident.0) {
+            if symbol_table.contains(&name.to_string()) {
                 return None
             }
             //println!("Searching for {} in global variables {:#?}", name, specified_global_variables);
-            if specified_global_variables.contains(&name.ident.0) {
+            if specified_global_variables.contains(&name.to_string()) {
                 return None
             }
             Some((cmd.span, String::from("Unspecified global variable is modified")))
@@ -231,10 +258,10 @@ fn does_method_modify_unspecified_global_variables(
             last
         }
         CmdKind::MethodCall { name: Some(name), ..} => {
-            if symbol_table.contains(&name.ident.0) {
+            if symbol_table.contains(&name.to_string()) {
                 return None
             }
-            if specified_global_variables.contains(&name.ident.0) {
+            if specified_global_variables.contains(&name.to_string()) {
                 return None
             }
             Some((cmd.span, String::from("Unspecified global variable is modified")))
@@ -468,6 +495,13 @@ fn replace_broke_in_expression(original_expression: &Expr, replace_value: bool) 
                 Box::new(replace_broke_in_expression(expr, replace_value))
             ),
             original_expression.ty.clone()),
+        ExprKind::FunctionCall { fun_name, args, function } => {
+            let mut replaced_args = Vec::new();
+            for arg in args {
+                replaced_args.push(replace_broke_in_expression(arg, replace_value));
+            }
+            Expr::call(fun_name.clone(), replaced_args, function.clone())
+        }
         _ => original_expression.clone(),
     };
     result.span = original_expression.span;
@@ -951,11 +985,18 @@ fn replace_in_expression(original_expression: &Expr, identifier: &Name, replace_
             ),
             original_expression.ty.clone()),
         ExprKind::Quantifier(_quantifier, variables, expr) => {
-            if (variables.into_iter().map(|x| x.name.ident.0.clone()).collect::<String>()).contains(&identifier.ident.0) {
+            if (variables.into_iter().map(|x| x.to_string()).collect::<String>()).contains(&identifier.ident.0) {
                 return original_expression.clone();
             }
             return replace_in_expression(expr, identifier, replace_with_identifier)
-        } 
+        },
+        ExprKind::FunctionCall { fun_name, args, function } => {
+            let mut replaced_args = Vec::new();
+            for arg in args {
+                replaced_args.push(replace_in_expression(arg, identifier, replace_with_identifier));
+            }
+            Expr::call(fun_name.clone(), replaced_args, function.clone())
+        }
         _ => original_expression.clone(),
     };
     result.span = original_expression.span;
@@ -985,6 +1026,13 @@ fn replace_result_in_expression(original_expression: &Expr, replace_expression: 
                 Box::new(replace_result_in_expression(expr, replace_expression))
             ),
             original_expression.ty.clone()),
+        ExprKind::FunctionCall { fun_name, args, function } => {
+            let mut replaced_args = Vec::new();
+            for arg in args {
+                replaced_args.push(replace_result_in_expression(arg, replace_expression));
+            }
+            Expr::call(fun_name.clone(), replaced_args, function.clone())
+        }
         _ => original_expression.clone(),
     };
     result.span = original_expression.span;
@@ -1020,6 +1068,13 @@ fn replace_old_in_expression(original_expression: &Expr, global_variables_old_va
                 Box::new(crate::replace_old_in_expression(expr, global_variables_old_values))
             ),
             original_expression.ty.clone()),
+        ExprKind::FunctionCall { fun_name, args, function } => {
+            let mut replaced_args = Vec::new();
+            for arg in args {
+                replaced_args.push(replace_old_in_expression(arg, global_variables_old_values));
+            }
+            Expr::call(fun_name.clone(), replaced_args, function.clone())
+        }
         _ => original_expression.clone(),
     };
     result.span = original_expression.span;
