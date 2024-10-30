@@ -68,7 +68,7 @@ impl slang_ui::Hook for App {
             solver.assert(spre.as_bool()?)?;
 
 
-            let post_conditions = m.ensures().map(|e| e.clone()).collect();
+            let post_conditions: Vec<Expr> = m.ensures().map(|e| e.clone()).collect();
 
             let mut ivl = IVLCmd::nop();
             let variant_assertion = match &m.variant {
@@ -85,16 +85,29 @@ impl slang_ui::Hook for App {
 
             let method_context = MethodContext {
                 name: m.name.clone(),
-                post_conditions: post_conditions,
+                post_conditions: post_conditions.clone(),
                 variant_assertion: variant_assertion.clone(),
             };
 
             // Get method's body
-            let cmd = &m.body.clone().unwrap().cmd;
+            let mut cmd = m.body.clone().unwrap().cmd;
+
+            match m.return_ty.clone() {
+                None => {
+                    let last_cmd = &Cmd::_return(&None);
+                    cmd = Box::new(cmd.seq(last_cmd))
+                },
+                Some(_) => {
+                    let mut expr = Expr::bool(false);
+                    expr.span = m.name.span.clone();
+                    let last_cmd = &Cmd::assert(&expr, "Method might not return");
+                    cmd = Box::new(cmd.seq(last_cmd))
+                }
+            }
 
             // Encode it in IVL
             let ivl_encoding = cmd_to_ivlcmd(
-                cmd,
+                &cmd,
                 &method_context,
                 &LoopContext::empty()
             )?;
@@ -729,6 +742,9 @@ fn extract_division_assertions(expr: &Expr) -> Result<Vec<Expr>> {
 }
 
 fn match_to_ivl(body: &Cases, method_context: &MethodContext, loop_context: &LoopContext) -> Result<IVLCmd> {
+    if body.cases.len() == 0 {
+        return Ok(IVLCmd::nop())
+    }
     let first_case = body.cases[0].clone();
     let cmd_b: IVLCmd =
         insert_division_by_zero_assertions(&first_case.condition, &first_case.condition.span)?.seq(

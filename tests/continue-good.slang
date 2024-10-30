@@ -19,5 +19,6 @@ method client(n: Int): Int
 
     };
     assert i == n;
-    assert acc == n * (n + 1) / 2
+    assert acc == n * (n + 1) / 2;
+    return acc
 }
