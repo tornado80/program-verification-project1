@@ -8,8 +8,8 @@ use std::iter::zip;
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
 use slang::ast::{Block, Cmd, CmdKind, Expr, ExprKind, Ident, MethodRef, Name, Op, Range, Type};
 use slang_ui::prelude::*;
-use slang_ui::prelude::slang::ast::{Cases, PrefixOp, Case};
-use slang_ui::prelude::slang::Span;
+use slang_ui::prelude::slang::ast::{Cases, PrefixOp, Case, Quantifier};
+use slang_ui::prelude::slang::{Span};
 use slang_ui::prelude::smtlib::funs::Fun;
 use slang_ui::prelude::smtlib::sorts::Sort;
 
@@ -67,6 +67,60 @@ impl slang_ui::Hook for App {
             }
         }
 
+        for f in file.functions() {
+            let mut std_args: Vec<Expr> = Vec::new();
+            for arg in &f.args {
+                std_args.push(Expr::ident(&arg.name.ident, &arg.ty.1))
+            }
+
+            let mut preconditions = Expr::bool(true);
+            for precondition in f.requires() {
+                preconditions = preconditions.and(precondition)
+            }
+
+            let mut post_conditions = Expr::bool(true);
+            for post_condition in f.ensures() {
+                post_conditions = post_conditions.and(
+                    &replace_result_in_expression(
+                        post_condition,
+                        &Expr::call(
+                            f.name.clone(),
+                            std_args.clone(),
+                            file.get_function_ref(f.name.ident.clone())
+                    ))
+                );
+            }
+
+            let mut body = Expr::bool(true);
+            if let Some(b) = &f.body {
+                body = Expr::call(
+                    f.name.clone(),
+                    std_args.clone(),
+                    file.get_function_ref(f.name.ident.clone())
+                ).op(Op::Eq, b)
+            }
+
+            // add as axiom
+            let axiom = Expr::quantifier(
+                Quantifier::Forall,
+                &f.args[..],
+                &preconditions.imp(
+                    &body.and(
+                        &post_conditions
+                    )
+                )
+            );
+
+            solver.assert(axiom.smt()?.as_bool()?)?;
+
+            if let None =  f.body {
+                continue;
+            }
+
+            // TODO: add checker function if it has body
+            // TODO: Refactor the method translation to be able to call it here
+        }
+
         // Iterate methods
         for m in file.methods() {
             if let None = m.body {
@@ -84,7 +138,7 @@ impl slang_ui::Hook for App {
             let spre = pre.smt()?;
             // Assert precondition
             // Why do we assert the preconditions?
-            // Reason: 
+            // Reason:
             // We are interested in the validity of each of the following predicates in the set
             // because we are "assuming the preconditions":
             // {pre_condition -> wp_predicate : forall wp_predicate in wp_list(body)[post_conditions]}
