@@ -1,0 +1,11 @@
+method client3(n: Int) {
+    n := 1;
+    var x: Int;
+    x := 1;
+    match {
+        n == 1 => 
+            var x: Int;
+            x := 2
+    };
+    assert x == 1
+}

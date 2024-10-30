@@ -2,7 +2,7 @@ pub mod ivl;
 mod ivl_ext;
 
 use std::vec;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 use std::iter::zip;
 use ivl::{IVLCmd, IVLCmdKind, WeakestPrecondition};
@@ -18,6 +18,7 @@ struct MethodContext {
     name: Name,
     variant_assertion : Expr,
     post_conditions: Vec<Expr>,
+    global_variables_old_values: HashMap<Ident, (Ident, Type)>
 }
 
 #[derive(Debug, Clone)]
@@ -45,8 +46,13 @@ impl slang_ui::Hook for App {
         // Get reference to Z3 solver
         let mut solver = cx.solver()?;
 
+
         // Iterate methods
         for m in file.methods() {
+            if let None = m.body {
+                continue;
+            }
+            //println!("Checking method {}", m.name);
             // Get method's preconditions;
             let pres = m.requires();
             // Merge them into a single condition
@@ -67,10 +73,24 @@ impl slang_ui::Hook for App {
             // Therefore we assert the precondition and later on assert the negation of each of the wp_predicate's
             solver.assert(spre.as_bool()?)?;
 
-
             let post_conditions: Vec<Expr> = m.ensures().map(|e| e.clone()).collect();
 
             let mut ivl = IVLCmd::nop();
+
+            // We assign the values of global variables to some fresh variables
+            // to replace with old later on
+            let mut global_variables_old_values: HashMap<Ident, (Ident, Type)> = HashMap::new();
+            let mut specified_global_variables = HashSet::new();
+            for (name, ty) in m.modifies() {
+                let global_var_old_name = get_fresh_var_name(&name.ident.clone());
+                global_variables_old_values.insert(name.ident.clone(), (global_var_old_name.clone(), ty.clone()));
+                specified_global_variables.insert(name.ident.0.clone());
+                ivl = ivl.seq(&IVLCmd::assign(
+                    &Name { span: name.span, ident: global_var_old_name },
+                    &Expr::ident(&name.ident.clone(), ty)
+                ));
+            }
+
             let variant_assertion = match &m.variant {
                 Some(variant_expr) => {
                     let variant_name = get_fresh_var_name(&Ident(String::from("variant")));
@@ -87,10 +107,22 @@ impl slang_ui::Hook for App {
                 name: m.name.clone(),
                 post_conditions: post_conditions.clone(),
                 variant_assertion: variant_assertion.clone(),
+                global_variables_old_values: global_variables_old_values.clone()
             };
 
             // Get method's body
             let mut cmd = m.body.clone().unwrap().cmd;
+
+            let mut symbol_table = HashSet::new();
+
+            if let Some((span, msg)) = does_method_modify_unspecified_global_variables(
+                &cmd,
+                &specified_global_variables,
+                &mut symbol_table
+            ) {
+                cx.error(span, msg);
+                return Ok(())
+            }
 
             match m.return_ty.clone() {
                 None => {
@@ -148,6 +180,69 @@ impl slang_ui::Hook for App {
         }
 
         Ok(())
+    }
+}
+
+fn does_method_modify_unspecified_global_variables(
+    cmd: &Cmd,
+    specified_global_variables: &HashSet<String>,
+    symbol_table: &mut HashSet<String>
+) -> Option<(Span, String)> {
+    match &cmd.kind {
+        CmdKind::Seq(c1, c2) => {
+            if let Some(t) = does_method_modify_unspecified_global_variables(&c1, specified_global_variables, symbol_table) {
+                return Some(t)
+            }
+            does_method_modify_unspecified_global_variables(&c2, specified_global_variables, symbol_table)
+        }
+        CmdKind::VarDefinition { name, .. } => {
+            symbol_table.insert(name.ident.0.clone());
+            None
+        }
+        CmdKind::Assignment { name, .. } => {
+            //println!("Searching for {} in symbol table {:#?}", name, symbol_table);
+            if symbol_table.contains(&name.ident.0) {
+                return None
+            }
+            //println!("Searching for {} in global variables {:#?}", name, specified_global_variables);
+            if specified_global_variables.contains(&name.ident.0) {
+                return None
+            }
+            Some((cmd.span, String::from("Unspecified global variable is modified")))
+        }
+        CmdKind::Match { body } => {
+            let mut last = None;
+            for case in &body.cases {
+                last = does_method_modify_unspecified_global_variables(&case.cmd, specified_global_variables, symbol_table);
+                if let Some(t) = last {
+                    return Some(t)
+                }
+            }
+            last
+        }
+        CmdKind::Loop { body, .. } => {
+            let mut last = None;
+            for case in &body.cases {
+                last = does_method_modify_unspecified_global_variables(&case.cmd, specified_global_variables, symbol_table);
+                if let Some(t) = last {
+                    return Some(t)
+                }
+            }
+            last
+        }
+        CmdKind::MethodCall { name: Some(name), ..} => {
+            if symbol_table.contains(&name.ident.0) {
+                return None
+            }
+            if specified_global_variables.contains(&name.ident.0) {
+                return None
+            }
+            Some((cmd.span, String::from("Unspecified global variable is modified")))
+        }
+        CmdKind::For { body, .. } => {
+            does_method_modify_unspecified_global_variables(&body.cmd, specified_global_variables, symbol_table)
+        }
+        _ => None
     }
 }
 
@@ -444,15 +539,18 @@ fn return_to_ivl(expr: Option<&Expr>, method_context: &MethodContext) -> Result<
     match expr {
         Some(return_value) => {
             for post_condition in method_context.post_conditions.clone() {
-                let replaced = replace_result_in_expression(&post_condition, return_value);
+                let replaced_result = replace_result_in_expression(&post_condition, return_value);
+                let replaced_old = replace_old_in_expression(&replaced_result, &method_context.global_variables_old_values);
                 // assert method_post_conditions[result <- expr]
-                result = result.seq(&IVLCmd::assert(&replaced, "Ensure might not hold"))
+                result = result.seq(&IVLCmd::assert(&replaced_old, "Ensure might not hold"))
             }
         }
         None => {
             for post_condition in method_context.post_conditions.clone() {
+                let replaced_old = replace_old_in_expression(&post_condition, &method_context.global_variables_old_values);
+                //println!("replace_old {}", replaced_old);
                 // assert method_post_conditions
-                result = result.seq(&IVLCmd::assert(&post_condition, "Ensure might not hold"))
+                result = result.seq(&IVLCmd::assert(&replaced_old, "Ensure might not hold"))
             }
         }
     }
@@ -593,17 +691,37 @@ fn find_modified_variables(cmd: &Cmd) -> Result<Vec<(Name, Type)>> {
     })
 }
 
-fn method_call_to_ivl(name: &Option<Name>, args: &Vec<Expr>, method: &MethodRef, fun_name: &Name, method_context: &MethodContext) -> Result<IVLCmd> {
+fn method_call_to_ivl(result_name: &Option<Name>, args: &Vec<Expr>, method: &MethodRef, fun_name: &Name, method_context: &MethodContext) -> Result<IVLCmd> {
     // zero divisions assertions
     let mut result = IVLCmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
     let arc = method.get().unwrap();
 
+    let mut return_value = None;
+
+    if let Some(result_name) = result_name {
+        if let Some((span, ty)) = &arc.return_ty {
+            return_value = Some((result_name, span, ty))
+        }
+    }
+
+    // Save prestate of arguments
     let mut names_map = vec![];
     for (arg, var) in zip(args, &arc.args) {
         result = result.seq(&insert_division_by_zero_assertions(arg, &arg.span.clone())?);
         let new_name = Name { ident: get_fresh_var_name(&var.name.ident), span: arg.span };
         result = result.seq(&IVLCmd::assign(&new_name, arg));
         names_map.push((var.clone(), new_name.ident));
+    }
+
+    // Save prestate of global variables
+    let mut global_variables_values_before_call = HashMap::new();
+    for (name, ty) in method.get().unwrap().modifies() {
+        let global_variable_old_name = get_fresh_var_name(&name.ident.clone());
+        global_variables_values_before_call.insert(name.ident.clone(), (global_variable_old_name.clone(), ty.clone()));
+        result = result.seq(&IVLCmd::assign(
+            &Name { ident: global_variable_old_name, span: name.span.clone() },
+            &Expr::ident(&name.ident.clone(), ty)
+        ))
     }
 
     // Make sure variant holds
@@ -622,6 +740,7 @@ fn method_call_to_ivl(name: &Option<Name>, args: &Vec<Expr>, method: &MethodRef,
     // pre-condition of the method
     let requires = arc.requires();
 
+    // assert preconditions
     for method_pre_condition in requires {
         let mut updated_pre_cond = method_pre_condition.clone();
         for (old_var, new_name) in names_map.clone() {
@@ -631,34 +750,45 @@ fn method_call_to_ivl(name: &Option<Name>, args: &Vec<Expr>, method: &MethodRef,
                 &Expr::new_typed(ExprKind::Ident(new_name), old_var.ty.1)
             );
         }
+
         result = result.seq(&IVLCmd::assert(&updated_pre_cond, "Requires might not hold"));
     }
 
 
-    if let Some(name) = name {
-        if let Some((_, return_ty)) = &arc.return_ty {
-            // havoc result variable
-            result = result.seq(&havoc_to_ivl(name, return_ty));
-
-            // post-condition of the method
-            let ensures = arc.ensures();
-            for method_post_condition in ensures {
-                let mut updated_post_cond = method_post_condition.clone();
-                for (old_var, new_name) in names_map.clone() {
-                    updated_post_cond = replace_in_expression(
-                        &updated_post_cond,
-                        &old_var.name,
-                        &Expr::new_typed(ExprKind::Ident(new_name), old_var.ty.1)
-                    );
-                }
-                updated_post_cond = replace_result_in_expression(
-                    &updated_post_cond,
-                    &Expr::new_typed(ExprKind::Ident(name.ident.clone()), return_ty.clone())
-                );
-                result = result.seq(&IVLCmd::assume(&updated_post_cond));
-            }
-        }
+    // havoc result variable if exists
+    if let Some((return_name, _span, ty)) = return_value {
+        result = result.seq(&havoc_to_ivl(return_name, ty))
     }
+
+    // Havoc modified globals variables
+    for (modified_global_variable, ty) in method.get().unwrap().modifies() {
+        result = result.seq(&havoc_to_ivl(modified_global_variable, ty));
+    }
+
+    // assert post-conditions of the method
+    let ensures = arc.ensures();
+    for method_post_condition in ensures {
+        let mut updated_post_cond = method_post_condition.clone();
+        for (old_var, new_name) in names_map.clone() {
+            updated_post_cond = replace_in_expression(
+                &updated_post_cond,
+                &old_var.name,
+                &Expr::ident(&new_name, &old_var.ty.1)
+            );
+        }
+        if let Some((return_name, _span, ty)) = return_value {
+            updated_post_cond = replace_result_in_expression(
+                &updated_post_cond,
+                &Expr::new_typed(ExprKind::Ident(return_name.ident.clone()), ty.clone())
+            );
+        }
+        updated_post_cond = replace_old_in_expression(
+            &updated_post_cond,
+            &global_variables_values_before_call
+        );
+        result = result.seq(&IVLCmd::assume(&updated_post_cond));
+    }
+
     return Ok(result)
 }
 
@@ -853,6 +983,41 @@ fn replace_result_in_expression(original_expression: &Expr, replace_expression: 
                 quantifier.clone(),
                 vars.clone(),
                 Box::new(replace_result_in_expression(expr, replace_expression))
+            ),
+            original_expression.ty.clone()),
+        _ => original_expression.clone(),
+    };
+    result.span = original_expression.span;
+    result
+}
+
+fn replace_old_in_expression(original_expression: &Expr, global_variables_old_values: &HashMap<Ident, (Ident, Type)>) -> Expr {
+    let mut result = match &original_expression.kind {
+        ExprKind::Old(Name { ident, .. }) => {
+            if let Some((new_ident, ty)) = global_variables_old_values.get(ident) {
+                Expr::ident(new_ident, ty)
+            } else {
+                panic!("method can not modify this global variable")
+            }
+        },
+        ExprKind::Prefix(op, expr) => Expr::new_typed(
+            ExprKind::Prefix(
+                *op,
+                Box::new(crate::replace_old_in_expression(expr, global_variables_old_values))
+            ),
+            original_expression.ty.clone()),
+        ExprKind::Infix(lhs, op, rhs) => Expr::new_typed(
+            ExprKind::Infix(
+                Box::new(crate::replace_old_in_expression(lhs, global_variables_old_values)),
+                *op,
+                Box::new(crate::replace_old_in_expression(rhs, global_variables_old_values))
+            ),
+            original_expression.ty.clone()),
+        ExprKind::Quantifier(quantifier, vars, expr) => Expr::new_typed(
+            ExprKind::Quantifier(
+                quantifier.clone(),
+                vars.clone(),
+                Box::new(crate::replace_old_in_expression(expr, global_variables_old_values))
             ),
             original_expression.ty.clone()),
         _ => original_expression.clone(),
