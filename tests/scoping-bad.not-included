@@ -7,5 +7,6 @@ method client3(n: Int) {
             var x: Int;
             x := 2
     };
+    // @CheckError
     assert x == 2
 }
