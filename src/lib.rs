@@ -135,6 +135,10 @@ impl slang_ui::Hook for App {
 
             let mut symbol_table = HashSet::new();
 
+            for arg in &m.args {
+                symbol_table.insert(arg.name.to_string());
+            }
+
             if let Some((span, msg)) = does_method_modify_unspecified_global_variables(
                 &cmd,
                 &specified_global_variables,
@@ -223,6 +227,9 @@ fn does_method_modify_unspecified_global_variables(
             does_method_modify_unspecified_global_variables(&c2, specified_global_variables, symbol_table)
         }
         CmdKind::VarDefinition { name, .. } => {
+            if symbol_table.contains(&name.to_string()) {
+                return Some((name.span.clone(), format!("Redeclaration of variable {} is not allowed", &name.to_string())));
+            }
             symbol_table.insert(name.to_string());
             None
         }
