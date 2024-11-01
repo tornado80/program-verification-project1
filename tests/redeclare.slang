@@ -3,5 +3,5 @@ method client() {
     assert x == 2;
     // @CheckError
     var x: Int;
-    assume x == 2;
+    assume x == 2
 }
