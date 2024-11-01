@@ -159,7 +159,7 @@ fn does_function_body_comply_with_postconditions_in_isolated_scope(
     cx: &mut slang_ui::Context,
     solver: &mut Solver<Z3Binary>
 ) -> Result<(), Error> {
-    let axiom_only_body = Expr::quantifier(
+    let _axiom_only_body = Expr::quantifier(
         Quantifier::Forall,
         &f.args[..],
         &preconditions.imp(
@@ -214,7 +214,7 @@ fn does_function_body_comply_with_postconditions_in_isolated_scope(
             span: f.name.span
         };
         requires.push(ensures_body);
-        let method_ensures_body = Method {
+        let _method_ensures_body = Method {
             name: Name::ident(get_fresh_var_name(&f.name.ident)),
             args: f.args.clone(),
             return_ty: Some(f.return_ty.clone()),
@@ -228,17 +228,20 @@ fn does_function_body_comply_with_postconditions_in_isolated_scope(
         };
         //println!("Axiom only body: {:#?}", axiom_only_body.to_string());
         //println!("Method only body: {:#?}", method_ensures_body);
+        /*
         let result1 = solver.scope(|solver| {
             solver.assert(expr_to_smt(&axiom_only_body)?.as_bool()?)?;
             verify_method(&method_ensures_body, cx, solver)
         });
+        */
+
         //println!("Axiom only post_conditions: {:#?}", axiom_only_post_conditions.to_string());
         //println!("Method post conditions: {:#?}", method_ensures_post_conditions);
-        let result2 = solver.scope(|solver| {
+        return solver.scope(|solver| {
             solver.assert(expr_to_smt(&axiom_only_post_conditions)?.as_bool()?)?;
             verify_method(&method_ensures_post_conditions, cx, solver)
         });
-
+        /*
         match (result1, result2) {
             (Ok(_), Ok(_)) => (),
             (Err(e), Ok(_)) => {
@@ -251,6 +254,8 @@ fn does_function_body_comply_with_postconditions_in_isolated_scope(
                 //println!("Both failed {e1} {e2}");
             }
         }
+
+         */
     }
     Ok(())
 }
@@ -440,7 +445,7 @@ fn does_method_modify_unspecified_global_variables(
             if specified_global_variables.contains(&name.to_string()) {
                 return None
             }
-            Some((cmd.span, String::from("Unspecified global variable is modified")))
+            Some((cmd.span, format!("Variable {} is modified but not declared in the current scope. If it is a global variable, consider annotating the method.", name.to_string())))
         }
         CmdKind::Match { body } => {
             let mut last = None;
@@ -462,14 +467,22 @@ fn does_method_modify_unspecified_global_variables(
             }
             last
         }
-        CmdKind::MethodCall { name: Some(name), ..} => {
-            if symbol_table.contains(&name.to_string()) {
-                return None
+        CmdKind::MethodCall { name, method, ..} => {
+            if let Some(name) = name {
+                if symbol_table.contains(&name.to_string()) {
+                    return None
+                }
+                if specified_global_variables.contains(&name.to_string()) {
+                    return None
+                }
+                return Some((cmd.span, format!("Variable {} is modified but not declared in the current scope. If it is a global variable, consider annotating the method.", name.to_string())))
             }
-            if specified_global_variables.contains(&name.to_string()) {
-                return None
+            for (variable_modified_by_called_method, _) in method.get()?.modifies() {
+                if !specified_global_variables.contains(&variable_modified_by_called_method.ident.to_string()) {
+                    return Some((cmd.span.clone(), format!("Global variable {} is modified by the called method but is not annotated in the current method as a modified global variable.", variable_modified_by_called_method.ident.to_string())));
+                }
             }
-            Some((cmd.span, String::from("Unspecified global variable is modified")))
+            None
         }
         CmdKind::For { body, .. } => {
             does_method_modify_unspecified_global_variables(&body.cmd, specified_global_variables, symbol_table)
