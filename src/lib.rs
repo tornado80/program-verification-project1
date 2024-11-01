@@ -855,12 +855,16 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, me
         loop_context)?;
 
     // DFS for breaks and chain using none deterministic choices
+    let mut case_condition_prefix = IVLCmd::nop();
     for case in cases.clone().cases {
-        let break_paths = find_break_paths(&case.cmd, IVLCmd::nop(), method_context, loop_context)?;
-
+        let assume_case = case_condition_prefix.seq(&IVLCmd::assume(&case.condition));
+        case_condition_prefix = case_condition_prefix.seq(&IVLCmd::assume(&case.condition.clone().prefix(PrefixOp::Not)));
+        let break_paths = find_break_paths(&case.cmd, assume_case, method_context, loop_context)?;
         for break_path in break_paths {
+            eprintln!("break_path {:#?}", break_path);
             body_translation = body_translation.nondet(&break_path)
         }
+
     }
     
 
