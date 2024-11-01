@@ -132,7 +132,7 @@ impl slang_ui::Hook for App {
             );
 
             if let Ok(_) = does_function_body_comply_with_postconditions_in_isolated_scope(
-                &f, &axiom, &std_args, &file, cx, &mut solver) {
+                &f, &axiom, &body, &preconditions, &post_conditions, &std_args, &file, cx, &mut solver) {
                 solver.assert(axiom.smt()?.as_bool()?)?;
             }
         }
@@ -142,7 +142,7 @@ impl slang_ui::Hook for App {
             if let None = m.body {
                 continue;
             }
-            verify_method(&m, cx, &mut solver);
+            let _ = verify_method(&m, cx, &mut solver);
         }
 
         Ok(())
@@ -152,11 +152,31 @@ impl slang_ui::Hook for App {
 fn does_function_body_comply_with_postconditions_in_isolated_scope(
     f: &Function,
     axiom: &Expr,
+    body: &Expr,
+    preconditions: &Expr,
+    post_conditions: &Expr,
     std_args: &Vec<Expr>,
     file: &slang::SourceFile,
     cx: &mut slang_ui::Context,
     solver: &mut Solver<Z3Binary>
 ) -> Result<(), Error> {
+    let axiom_only_body = Expr::quantifier(
+        Quantifier::Forall,
+        &f.args[..],
+        &preconditions.imp(
+            body
+        )
+    );
+
+    let axiom_only_post_conditions = Expr::quantifier(
+        Quantifier::Forall,
+        &f.args[..],
+        &preconditions.imp(
+            post_conditions
+        )
+    );
+
+
     // add checker method
     /*
     method check foo (x:T) returns ( result : S)
@@ -166,8 +186,26 @@ fn does_function_body_comply_with_postconditions_in_isolated_scope(
         { return e }
     */
     if let Some(b) = &f.body {
-        let mut specifications = f.specifications.clone();
-        let specification = Specification::Ensures {
+        let method_ensures_post_conditions = Method {
+            name: Name::ident(get_fresh_var_name(&f.name.ident)),
+            args: f.args.clone(),
+            return_ty: Some(f.return_ty.clone()),
+            span: f.span.clone(),
+            specifications: f.specifications.clone(),
+            variant: None,
+            body: Some(Block {
+                cmd: Box::new(Cmd::_return(&Some(b.clone()))),
+                span: b.span.clone()
+            })
+        };
+        //specifications.push(ensures_body);
+        let mut requires: Vec<Specification> = Vec::new();
+        for specification in &f.specifications {
+            if let Specification::Requires { .. } = specification {
+                requires.push(specification.clone());
+            }
+        }
+        let ensures_body = Specification::Ensures {
             expr: Expr::result(&f.return_ty.1).op(Op::Eq, &Expr::call(
                 f.name.clone(),
                 std_args.clone(),
@@ -176,24 +214,44 @@ fn does_function_body_comply_with_postconditions_in_isolated_scope(
             ),
             span: f.name.span
         };
-        specifications.push(specification);
-        let method = Method {
+        requires.push(ensures_body);
+        let method_ensures_body = Method {
             name: Name::ident(get_fresh_var_name(&f.name.ident)),
             args: f.args.clone(),
             return_ty: Some(f.return_ty.clone()),
             span: f.span.clone(),
-            specifications,
+            specifications: requires.clone(),
             variant: None,
             body: Some(Block {
                 cmd: Box::new(Cmd::_return(&Some(b.clone()))),
                 span: b.span.clone()
             })
         };
+        //println!("Axiom only body: {:#?}", axiom_only_body.to_string());
+        //println!("Method only body: {:#?}", method_ensures_body);
+        let result1 = solver.scope(|solver| {
+            solver.assert(expr_to_smt(&axiom_only_body)?.as_bool()?)?;
+            verify_method(&method_ensures_body, cx, solver)
+        });
+        //println!("Axiom only post_conditions: {:#?}", axiom_only_post_conditions.to_string());
+        //println!("Method post conditions: {:#?}", method_ensures_post_conditions);
+        let result2 = solver.scope(|solver| {
+            solver.assert(expr_to_smt(&axiom_only_post_conditions)?.as_bool()?)?;
+            verify_method(&method_ensures_post_conditions, cx, solver)
+        });
 
-        return  solver.scope(|solver| {
-            solver.assert(expr_to_smt(&axiom)?.as_bool()?)?;
-            Ok(verify_method(&method, cx, solver))
-        })?
+        match (result1, result2) {
+            (Ok(_), Ok(_)) => (),
+            (Err(e), Ok(_)) => {
+                //println!("Ensure body failed {e}");
+                return Err(e) },
+            (Ok(_), Err(e)) => {
+                //println!("Ensure post conditions failed {e}");
+                return Err(e) }
+            (Err(e1), Err(e2)) => {
+                //println!("Both failed {e1} {e2}");
+            }
+        }
     }
     Ok(())
 }
@@ -226,6 +284,7 @@ fn verify_method(m: &Method, cx: &mut slang_ui::Context, solver: &mut Solver<Z3B
     // However, we check for satisfiability of !(precondition -> wp_predicate)
     // which is equivalent to !(!precondition or wp_predicate) == precondition and !wp_predicate
     // Therefore we assert the precondition and later on assert the negation of each of the wp_predicate's
+    //println!("Spre: {:#?}", spre);
     solver.assert(spre.as_bool()?)?;
 
     let post_conditions: Vec<Expr> = m.ensures().map(|e| e.clone()).collect();
@@ -304,6 +363,7 @@ fn verify_method(m: &Method, cx: &mut slang_ui::Context, solver: &mut Solver<Z3B
     )?;
 
     ivl = ivl.seq(&ivl_encoding);
+    //println!("IVL:\n{:#?}", ivl);
 
     let dsa = ivl_to_dsa(&ivl, &mut HashMap::new())?;
 
@@ -331,11 +391,11 @@ fn verify_method(m: &Method, cx: &mut slang_ui::Context, solver: &mut Solver<Z3B
                 smtlib::SatResult::Sat => {
                     //println!("{}", format!("expr: {expr} span_start: {}  span_end: {}", span.start(), span.end()));
                     cx.error(span, format!("{}", msg));
-                    res = Err(Error::UnexpectedSatResult{expected: SatResult::Sat, actual: SatResult::Unsat});
+                    res = Err(Error::UnexpectedSatResult{expected: SatResult::Unsat, actual: SatResult::Sat});
                 }
                 smtlib::SatResult::Unknown => {
                     cx.error(span, format!("{msg}"));
-                    res = Err(Error::UnexpectedSatResult{expected: SatResult::Unknown, actual: SatResult::Unsat});
+                    res = Err(Error::UnexpectedSatResult{expected: SatResult::Unsat, actual: SatResult::Unknown});
                 }
                 smtlib::SatResult::Unsat => (),
             }
