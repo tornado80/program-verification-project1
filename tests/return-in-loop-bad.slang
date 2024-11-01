@@ -1,6 +1,6 @@
 method client (x: Int) : Int
   requires x > 3
-  // @CheckError
+  // CheckError
   ensures result == x
 {
   var i: Int := 0;
@@ -8,6 +8,7 @@ method client (x: Int) : Int
     invariant i <= x
   {
     i == x =>
+        // @CheckError
       return 2,
     true =>
       i := i + 1,

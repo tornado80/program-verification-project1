@@ -8,9 +8,10 @@ method sumn(n: Int): Int
         invariant i >= 0
         invariant i <= n
         invariant acc == i * (i + 1) / 2
-        // @CheckError
+        // CheckError
         decreases n + i
     {
+        // @CheckError
         i < n =>
             i := i + 1;
             acc := acc + i

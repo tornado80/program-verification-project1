@@ -11,8 +11,9 @@ method Sum(n: Int) : Int
 }
 
 method Square(x: Int) : Int
-    // @CheckError
+    // CheckError
     ensures result == x * x
 {
+    // @CheckError
     return 2 * x
 }

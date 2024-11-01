@@ -4,13 +4,14 @@ method client(n: Int)
     var i: Int := n;
     loop
         invariant i >= 0
-        // @CheckError
+        // CheckError
         decreases i
     {
         i > 2 =>
             match {
                 i == 6 =>
                     i := i + 1;
+                    // @CheckError
                     continue
             };
             i := i - 2

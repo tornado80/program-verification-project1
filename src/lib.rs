@@ -132,7 +132,7 @@ impl slang_ui::Hook for App {
             );
 
             if let Ok(_) = does_function_body_comply_with_postconditions_in_isolated_scope(
-                &f, &axiom, &body, &preconditions, &post_conditions, &std_args, &file, cx, &mut solver) {
+                &f, &body, &preconditions, &post_conditions, &std_args, &file, cx, &mut solver) {
                 solver.assert(axiom.smt()?.as_bool()?)?;
             }
         }
@@ -151,7 +151,6 @@ impl slang_ui::Hook for App {
 
 fn does_function_body_comply_with_postconditions_in_isolated_scope(
     f: &Function,
-    axiom: &Expr,
     body: &Expr,
     preconditions: &Expr,
     post_conditions: &Expr,
@@ -248,7 +247,7 @@ fn does_function_body_comply_with_postconditions_in_isolated_scope(
             (Ok(_), Err(e)) => {
                 //println!("Ensure post conditions failed {e}");
                 return Err(e) }
-            (Err(e1), Err(e2)) => {
+            (Err(_e1), Err(_e2)) => {
                 //println!("Both failed {e1} {e2}");
             }
         }
@@ -310,7 +309,7 @@ fn verify_method(m: &Method, cx: &mut slang_ui::Context, solver: &mut Solver<Z3B
             let variant_name = get_fresh_var_name(&Ident(String::from("variant")));
             let variant_assignment = IVLCmd::assign(&Name { span: variant_expr.span, ident: variant_name.clone() }, &variant_expr);
             let mut variant_base = Expr::new_typed(ExprKind::Infix(Box::new(Expr::ident(&variant_name.clone(), &Type::Int)), Op::Ge, Box::new(Expr::num(0))), Type::Bool);
-            ivl = ivl.seq(&variant_assignment).seq(&IVLCmd::assert(&variant_base, "Variant might not always be >= 0"));
+            ivl = ivl.seq(&variant_assignment).seq(&IVLCmd::assert(&variant_base, "Method variant might not be non-negative on entry"));
             variant_base.span = variant_expr.span.clone();
             &Expr::new_typed(ExprKind::Infix(Box::new(variant_expr.clone()), Op::Lt, Box::new(Expr::ident(&variant_name, &Type::Int))), Type::Bool)
         },
@@ -344,8 +343,9 @@ fn verify_method(m: &Method, cx: &mut slang_ui::Context, solver: &mut Solver<Z3B
 
     match m.return_ty.clone() {
         None => {
-            let last_cmd = &Cmd::_return(&None);
-            cmd = Box::new(cmd.seq(last_cmd))
+            let mut last_cmd = Cmd::_return(&Some(Expr::result(&Type::Unresolved)));
+            last_cmd.span = m.name.span.clone();
+            cmd = Box::new(cmd.seq(&last_cmd))
         },
         Some(_) => {
             let mut expr = Expr::bool(false);
@@ -638,41 +638,53 @@ fn cmd_to_ivlcmd(cmd: &Cmd, method_context: &MethodContext, loop_context: &LoopC
             match_to_ivl(body, method_context, loop_context)?,
         CmdKind::Return { expr: Some(value)} =>
             insert_division_by_zero_assertions(value, span)?.seq(
-                &return_to_ivl(Some(value), method_context)?
+                &return_to_ivl(Some(value), span, method_context)?
             ),
         CmdKind::Return { expr: None } =>
-            return_to_ivl(None, method_context)?,
+            return_to_ivl(None, span, method_context)?,
         CmdKind::MethodCall { name, args, method, fun_name } =>
-            method_call_to_ivl(name, args, method, fun_name, method_context)?,
+            method_call_to_ivl(name, args, span, method, fun_name, method_context)?,
         CmdKind::Loop { invariants , variant, body: cases } =>
             loop_to_ivl(invariants,variant, cases, &method_context)?,
         CmdKind::For { name, range, invariants, variant, body } =>
             for_to_ivl(name, range, invariants, variant, body, method_context)?,
         CmdKind::Continue =>
-            continue_to_ivl(loop_context)?,
+            continue_to_ivl(span, loop_context)?,
         CmdKind::Break =>
-            break_to_ivl(loop_context)?,
+            break_to_ivl(span, loop_context)?,
         _ => todo!("{:#?}", cmd.kind),
     })
 }
 
-fn break_to_ivl(loop_context: &LoopContext) -> Result<IVLCmd, Error> {
+fn break_to_ivl(span: &Span, loop_context: &LoopContext) -> Result<IVLCmd, Error> {
     let mut result = IVLCmd::assert(&Expr::bool(true), "Congratulations it couldn't fail!");
     for invariant in loop_context.clone().invariants {
-        let expr_without_broke = replace_broke_in_expression(&invariant.clone(), true);
-        result = result.seq(&IVLCmd::assert(&expr_without_broke, "Invariant might not hold after break"));
+        let mut expr_without_broke = replace_broke_in_expression(&invariant.clone(), true);
+        expr_without_broke.span = span.clone();
+        result = result.seq(&IVLCmd::assert(
+            &expr_without_broke,
+            &format!("Invariant {} might not hold after break", invariant.to_string()),
+        ));
     }
     result = result.seq(&IVLCmd::assume(&Expr::bool(false)));
     Ok(result)
 }
 
-fn continue_to_ivl(loop_context: &LoopContext) -> Result<IVLCmd, Error> {
+fn continue_to_ivl(span: &Span, loop_context: &LoopContext) -> Result<IVLCmd, Error> {
     let mut result = IVLCmd::assert(&Expr::bool(true), "Congratulations it couldn't fail!");
     for invariant in loop_context.clone().invariants {
-        let expr_without_broke = replace_broke_in_expression(&invariant.clone(), false);
-        result = result.seq(&IVLCmd::assert(&expr_without_broke, "Invariant might not hold after continue"));
+        let mut expr_without_broke = replace_broke_in_expression(&invariant.clone(), false);
+        expr_without_broke.span = span.clone();
+        result = result.seq(&IVLCmd::assert(
+            &expr_without_broke,
+            &format!("Loop invariant {} might not hold after continue", invariant.to_string())
+        ));
     }
-    result = result.seq(&IVLCmd::assert(&loop_context.variant_assertion, "Variant might not hold after continue"));
+    let mut variant_assertion = loop_context.variant_assertion.clone();
+    variant_assertion.span = span.clone();
+    result = result.seq(&IVLCmd::assert(
+        &variant_assertion,
+        "Loop variant might not be decreased before continue"));
     result = result.seq(&IVLCmd::assume(&Expr::bool(false)));
     Ok(result)
 }
@@ -770,26 +782,50 @@ fn unbounded_to_ivl(name: &Name, start: &Expr, end: &Expr, invariants: &Vec<Expr
     );
 }
 
-fn return_to_ivl(expr: Option<&Expr>, method_context: &MethodContext) -> Result<IVLCmd, Error> {
+fn return_to_ivl(expr: Option<&Expr>, span: &Span, method_context: &MethodContext) -> Result<IVLCmd, Error> {
     // we model the return with the following:
     // assert method_post_conditions[result <- expr]
     // assume false
     let mut result = IVLCmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
     match expr {
+        // CAVEAT: the following case is only for the last artificial "return;" added to the end of methods
+        // that do not return anything. Note that result can not be used in the body of methods or
+        // can not be returned. It is only for specification of ensures. We are artificially returning
+        // result to be able to catch this specific return and set the correct span here
+        Some(Expr { kind: ExprKind::Result, .. }) => {
+            for post_condition in method_context.post_conditions.clone() {
+                let mut replaced_old = replace_old_in_expression(&post_condition, &method_context.global_variables_old_values);
+                replaced_old.span = post_condition.span.clone();
+                //println!("replace_old {}", replaced_old);
+                // assert method_post_conditions
+                result = result.seq(&IVLCmd::assert(
+                    &replaced_old,
+                    &format!("Ensure {} might not hold", post_condition.to_string())
+                ))
+            }
+        }
         Some(return_value) => {
             for post_condition in method_context.post_conditions.clone() {
                 let replaced_result = replace_result_in_expression(&post_condition, return_value);
-                let replaced_old = replace_old_in_expression(&replaced_result, &method_context.global_variables_old_values);
+                let mut replaced_old = replace_old_in_expression(&replaced_result, &method_context.global_variables_old_values);
+                replaced_old.span = span.clone();
                 // assert method_post_conditions[result <- expr]
-                result = result.seq(&IVLCmd::assert(&replaced_old, "Ensure might not hold"))
+                result = result.seq(&IVLCmd::assert(
+                    &replaced_old,
+                    &format!("Ensure {} might not hold", post_condition.to_string())
+                ))
             }
         }
         None => {
             for post_condition in method_context.post_conditions.clone() {
-                let replaced_old = replace_old_in_expression(&post_condition, &method_context.global_variables_old_values);
+                let mut replaced_old = replace_old_in_expression(&post_condition, &method_context.global_variables_old_values);
+                replaced_old.span = span.clone();
                 //println!("replace_old {}", replaced_old);
                 // assert method_post_conditions
-                result = result.seq(&IVLCmd::assert(&replaced_old, "Ensure might not hold"))
+                result = result.seq(&IVLCmd::assert(
+                    &replaced_old,
+                    &format!("Ensure {} might not hold", post_condition.to_string())
+                ))
             }
         }
     }
@@ -800,11 +836,13 @@ fn return_to_ivl(expr: Option<&Expr>, method_context: &MethodContext) -> Result<
 
 fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, method_context: &MethodContext) -> Result<IVLCmd, Error> {
     let mut result = IVLCmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
-    let mut assert_seq_cmd = Cmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
+    let mut loop_invariants_assertions: Vec<(Expr, Expr)> = Vec::new();
     for invariant in invariants {
         let expr_without_broke = replace_broke_in_expression(invariant, false);
-        result = result.seq(&IVLCmd::assert(&expr_without_broke, "Invariant might not hold on entry"));
-        assert_seq_cmd = assert_seq_cmd.seq(&Cmd::assert(&expr_without_broke, "Invariant might not be preserved"));
+        result = result.seq(&IVLCmd::assert(
+            &expr_without_broke,
+            &format!("Loop invariant {} might not hold on entry", invariant.to_string())));
+        loop_invariants_assertions.push((invariant.clone(), expr_without_broke.clone()));
     }
 
     for case in cases.cases.clone() {
@@ -825,7 +863,7 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, me
             let variant_assignment = IVLCmd::assign(&Name { span: variant_expr.span, ident: variant_name.clone() }, variant_expr);
             let mut variant_base = Expr::new_typed(ExprKind::Infix(Box::new(Expr::ident(&variant_name.clone(), &Type::Int)), Op::Ge, Box::new(Expr::num(0))), Type::Bool);
             variant_base.span = variant_expr.span.clone();
-            result = result.seq(&variant_assignment).seq(&IVLCmd::assert(&variant_base, "Variant might not always be >= 0"));
+            result = result.seq(&variant_assignment).seq(&IVLCmd::assert(&variant_base, "Loop variant might not be non-negative on entry"));
             &Expr::new_typed(ExprKind::Infix(Box::new(variant_expr.clone()), Op::Lt, Box::new(Expr::ident(&variant_name, &Type::Int))), Type::Bool)
         },
         _ => &Expr::new_typed(ExprKind::Bool(true), Type::Bool)
@@ -833,12 +871,23 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, me
 
     let mut new_cases =  vec![];
     for case in cases.cases.clone() {
+        let mut local_variant_assertion = variant_assertion.clone();
+        local_variant_assertion.span = case.condition.span.clone();
+        let mut loop_invariants_assertions_commands = Cmd::nop();
+        for (loop_invariant, loop_invariant_assertion) in &loop_invariants_assertions {
+            let mut local_loop_invariant_assertion = loop_invariant_assertion.clone();
+            local_loop_invariant_assertion.span = case.condition.span.clone();
+            loop_invariants_assertions_commands = loop_invariants_assertions_commands.seq(&Cmd::assert(
+                &local_loop_invariant_assertion,
+                &format!("Loop invariant {} might not be preserved in this case", loop_invariant.to_string())
+            ));
+        }
         new_cases.push(Case {
             condition: case.condition,
             cmd: 
                 case.cmd
-                .seq(&assert_seq_cmd)
-                .seq(&Cmd::assert(variant_assertion, "Variant might not hold"))
+                .seq(&loop_invariants_assertions_commands)
+                .seq(&Cmd::assert(&local_variant_assertion, "Loop variant might not be decreased in this case"))
                 .seq(&Cmd::assume(&Expr::new_typed(ExprKind::Bool(false), Type::Bool)) // We need to ignore the post condition
             )
         })
@@ -861,7 +910,7 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, me
         case_condition_prefix = case_condition_prefix.seq(&IVLCmd::assume(&case.condition.clone().prefix(PrefixOp::Not)));
         let break_paths = find_break_paths(&case.cmd, assume_case, method_context, loop_context)?;
         for break_path in break_paths {
-            eprintln!("break_path {:#?}", break_path);
+            //eprintln!("break_path {:#?}", break_path);
             body_translation = body_translation.nondet(&break_path)
         }
 
@@ -934,7 +983,7 @@ fn find_modified_variables(cmd: &Cmd) -> Result<Vec<(Name, Type)>, Error> {
     })
 }
 
-fn method_call_to_ivl(result_name: &Option<Name>, args: &Vec<Expr>, method: &MethodRef, fun_name: &Name, method_context: &MethodContext) -> Result<IVLCmd, Error> {
+fn method_call_to_ivl(result_name: &Option<Name>, args: &Vec<Expr>, span: &Span, method: &MethodRef, fun_name: &Name, method_context: &MethodContext) -> Result<IVLCmd, Error> {
     // zero divisions assertions
     let mut result = IVLCmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
     let arc = method.get().unwrap();
@@ -977,7 +1026,8 @@ fn method_call_to_ivl(result_name: &Option<Name>, args: &Vec<Expr>, method: &Met
                 &Expr::new_typed(ExprKind::Ident(new_name), old_var.ty.1)
             );
         }
-        result = result.seq(&IVLCmd::assert(&updated_variant_assertion, "Variant might not hold"));
+        updated_variant_assertion.span = span.clone();
+        result = result.seq(&IVLCmd::assert(&updated_variant_assertion, "Method variant might not be decreased"));
     }
 
     // pre-condition of the method
@@ -993,8 +1043,11 @@ fn method_call_to_ivl(result_name: &Option<Name>, args: &Vec<Expr>, method: &Met
                 &Expr::new_typed(ExprKind::Ident(new_name), old_var.ty.1)
             );
         }
-
-        result = result.seq(&IVLCmd::assert(&updated_pre_cond, "Requires might not hold"));
+        updated_pre_cond.span = span.clone();
+        result = result.seq(&IVLCmd::assert(
+            &updated_pre_cond,
+            &format!("Requires {} might not hold", method_pre_condition.to_string())
+        ));
     }
 
 
