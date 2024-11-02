@@ -72,6 +72,18 @@ impl slang_ui::Hook for App {
         }
 
         for f in file.functions() {
+            let mut vars = Vec::new();
+            for arg in &f.args {
+                vars.push(Sort::new(type_to_string(&arg.ty.1)))
+            }
+            solver.declare_fun(&Fun::new(
+                f.name.to_string(),
+                vars,
+                Sort::new(type_to_string(&f.return_ty.1))
+            ))?;
+        }
+
+        for f in file.functions() {
             let mut std_args: Vec<Expr> = Vec::new();
             for arg in &f.args {
                 std_args.push(Expr::ident(&arg.name.ident, &arg.ty.1))
@@ -91,16 +103,7 @@ impl slang_ui::Hook for App {
                 ).op(Op::Eq, b)
             }
 
-            let mut vars = Vec::new();
-            for arg in &f.args {
-                vars.push(Sort::new(type_to_string(&arg.ty.1)))
-            }
 
-            solver.declare_fun(&Fun::new(
-                f.name.to_string(),
-                vars,
-                Sort::new(type_to_string(&f.return_ty.1))
-            ))?;
 
             // add as axiom
             /*
@@ -1120,7 +1123,7 @@ fn insert_division_by_zero_assertions(expr: &Expr, span: &Span) -> Result<IVLCmd
 fn extract_division_assertions(expr: &Expr) -> Result<Vec<Expr>, Error> {
     Ok(match &expr.kind {
         ExprKind::Prefix(_op, e) => extract_division_assertions(e)?,
-        ExprKind::Infix(e1, op, e2) if op.clone() == Op::Div => {
+        ExprKind::Infix(e1, op, e2) if op.clone() == Op::Div || op.clone() == Op::Mod => {
             let mut result = extract_division_assertions(e1)?.clone();
             result.extend(extract_division_assertions(e2)?);
             result.push(
