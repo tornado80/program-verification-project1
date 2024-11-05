@@ -768,7 +768,7 @@ fn bounded_to_ivl(name: &Name, start: &Expr, end: &Expr, body: &Block, method_co
     let start_value = evaluate_bounded(start);
     let end_value = evaluate_bounded(end);
     if start_value > end_value {
-        panic!("Start value is higher than end value");
+        return Ok(IVLCmd::nop());
     }
 
     let mut result = IVLCmd::assign(name, &Expr::new_typed(ExprKind::Num(start_value), Type::Int));
