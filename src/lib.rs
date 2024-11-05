@@ -1078,7 +1078,7 @@ fn method_call_to_ivl(result_name: &Option<Name>, args: &Vec<Expr>, span: &Span,
         result = result.seq(&havoc_to_ivl(modified_global_variable, ty));
     }
 
-    // assert post-conditions of the method
+    // assume post-conditions of the method
     let ensures = arc.ensures();
     for method_post_condition in ensures {
         let mut updated_post_cond = method_post_condition.clone();
