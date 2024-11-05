@@ -4,11 +4,10 @@ method iter(n: Int): Int
     var i: Int := 0;
     loop
         // false: when the loop terminates, i == n + 1
-        // CheckError
+        // @CheckError
         invariant i <= n
     {
         i > n + 1 => break,
-        // @CheckError
         i <= n =>
             i := i + 1
     }

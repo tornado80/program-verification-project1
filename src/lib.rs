@@ -893,18 +893,18 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, me
         let mut loop_invariants_assertions_commands = Cmd::nop();
         for (loop_invariant, loop_invariant_assertion) in &loop_invariants_assertions {
             let mut local_loop_invariant_assertion = loop_invariant_assertion.clone();
-            local_loop_invariant_assertion.span = case.condition.span.clone();
+            local_loop_invariant_assertion.span = loop_invariant.span.clone();
             loop_invariants_assertions_commands = loop_invariants_assertions_commands.seq(&Cmd::assert(
                 &local_loop_invariant_assertion,
-                &format!("Loop invariant {} might not be preserved in this case", loop_invariant.to_string())
+                &format!("Loop invariant {} might not be preserved in case {}", loop_invariant.to_string(), case.condition.to_string())
             ));
         }
         new_cases.push(Case {
-            condition: case.condition,
+            condition: case.condition.clone(),
             cmd: 
                 case.cmd
                 .seq(&loop_invariants_assertions_commands)
-                .seq(&Cmd::assert(&local_variant_assertion, "Loop variant might not be decreased in this case"))
+                .seq(&Cmd::assert(&local_variant_assertion, &format!("Loop variant might not be decreased in case {}", case.condition.clone().to_string())))
                 .seq(&Cmd::assume(&Expr::new_typed(ExprKind::Bool(false), Type::Bool)) // We need to ignore the post condition
             )
         })
