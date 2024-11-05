@@ -782,7 +782,8 @@ fn bounded_to_ivl(name: &Name, start: &Expr, end: &Expr, body: &Block, method_co
 }
 
 fn unbounded_to_ivl(name: &Name, start: &Expr, end: &Expr, invariants: &Vec<Expr>, variant: &Option<Expr>, body: &Block, method_context: &MethodContext) -> Result<IVLCmd, Error> {
-    let iterator_invariant = Expr::new_typed(ExprKind::Infix(Box::new(Expr::new_typed(ExprKind::Ident(name.ident.clone()), Type::Int)), Op::Le, Box::new(end.clone())), Type::Bool);
+    let mut iterator_invariant = Expr::new_typed(ExprKind::Infix(Box::new(Expr::new_typed(ExprKind::Ident(name.ident.clone()), Type::Int)), Op::Le, Box::new(end.clone())), Type::Bool);
+    iterator_invariant = iterator_invariant.and(&Expr::op(&Expr::ident(&name.ident, &Type::Int), Op::Ge, start));
 
     let for_condition = Expr::new_typed(ExprKind::Infix(Box::new(Expr::new_typed(ExprKind::Ident(name.ident.clone()), Type::Int)), Op::Lt, Box::new(end.clone())), Type::Bool);
     let iterator_increase = Cmd::assign(name, &Expr::new_typed(ExprKind::Infix(Box::new(Expr::ident(&name.ident, &Type::Int)), Op::Add, Box::new(Expr::new_typed(ExprKind::Num(1), Type::Int))), Type::Int));
