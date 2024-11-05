@@ -30,7 +30,7 @@ Generally speaking, your solution must be sound but not necessarily complete. Ho
 
 You must submit the project as a single `.zip` file including your source code and report via the corresponding assignment on DTU Learn.
 
-**The submission deadline is 01/11/2024.**
+**The submission deadline is 11/11/2024.**
 
 If your verification tool is not used in exactly the same way as suggested by the provided library, you must also include a README explaining how to run your tool.
 
