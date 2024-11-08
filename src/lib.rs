@@ -638,9 +638,9 @@ fn cmd_to_ivlcmd(cmd: &Cmd, method_context: &MethodContext, loop_context: &LoopC
     let &Cmd { kind, span, .. } = &cmd;
     Ok(match kind {
         CmdKind::Assert { condition, message } =>
-            IVLCmd::assert(condition, message),
+            IVLCmd::assert(&replace_old_in_expression(condition, &method_context.global_variables_old_values), message),
         CmdKind::Assume { condition} =>
-            IVLCmd::assume(condition),
+            IVLCmd::assume(&replace_old_in_expression(condition, &method_context.global_variables_old_values)),
         CmdKind::Seq(cmd1, cmd2) =>
             cmd_to_ivlcmd(cmd1, &method_context, loop_context)?.seq(
                 &cmd_to_ivlcmd(cmd2, &method_context, loop_context)?),
