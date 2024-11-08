@@ -1,21 +1,19 @@
-method sumn(n: Int): Int
+method client(n: Int)
     requires n >= 0
-    ensures result == n * (n + 1)/2
 {
-    var acc: Int := 0;
+    var counter: Int := n;
     var i: Int := 0;
-    loop 
-        invariant i >= 0
-        invariant i <= n
-        invariant acc == i * (i + 1) / 2
-        // CheckError
-        decreases n + i
+    var j: Int := 0;
+    loop
+        decreases counter + j
     {
+        i == 10 && n >= 20 =>
+            counter := counter - 10;
+            i := i + 10,
         // @CheckError
-        i < n =>
-            i := i + 1;
-            acc := acc + i
-    };
-    assert i == n;
-    return acc
+        i < n && i >= 0 => 
+            counter := counter - 1;
+            j := j + 1;
+            i := i + 1
+    }
 }

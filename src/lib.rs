@@ -853,6 +853,16 @@ fn return_to_ivl(expr: Option<&Expr>, span: &Span, method_context: &MethodContex
 
 fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, method_context: &MethodContext) -> Result<IVLCmd, Error> {
     let mut result = IVLCmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
+    
+    match variant {
+        Some(variant_expr) => {
+            let mut variant_entry_assertion = IVLCmd::assert(&Expr::op(variant_expr, Op::Ge, &Expr::num(0)), "Loop variant might not be non-negative on entry");
+            variant_entry_assertion.span = variant_expr.span;
+            result = result.seq(&variant_entry_assertion);
+        }
+        _ => {}
+    }
+
     let mut loop_invariants_assertions: Vec<(Expr, Expr)> = Vec::new();
     for invariant in invariants {
         let expr_without_broke = replace_broke_in_expression(invariant, false);
@@ -878,9 +888,7 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, me
         Some(variant_expr) => {
             let variant_name = get_fresh_var_name(&Ident(String::from("variant")));
             let variant_assignment = IVLCmd::assign(&Name { span: variant_expr.span, ident: variant_name.clone() }, variant_expr);
-            let mut variant_base = Expr::new_typed(ExprKind::Infix(Box::new(Expr::ident(&variant_name.clone(), &Type::Int)), Op::Ge, Box::new(Expr::num(0))), Type::Bool);
-            variant_base.span = variant_expr.span.clone();
-            result = result.seq(&variant_assignment).seq(&IVLCmd::assert(&variant_base, "Loop variant might not be non-negative on entry"));
+            result = result.seq(&variant_assignment);
             &Expr::new_typed(ExprKind::Infix(Box::new(variant_expr.clone()), Op::Lt, Box::new(Expr::ident(&variant_name, &Type::Int))), Type::Bool)
         },
         _ => &Expr::new_typed(ExprKind::Bool(true), Type::Bool)
