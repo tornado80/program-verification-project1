@@ -3,9 +3,6 @@ method client(n: Int)
     var i: Int := 30;
     var j: Int := i;
     loop
-        invariant i >= 15
-        invariant i <= 30
-        decreases i
     {
         i == 15 =>
             match {
@@ -28,6 +25,8 @@ method client(n: Int)
             // This fails because j is actually -2
             // @CheckError
             assert j == -3,
+        n % 2 == 2 =>
+            assert false
     };
 
     // this is reachable so should also fail
