@@ -24,7 +24,8 @@ struct MethodContext {
     name: Name,
     variant_assertion : Expr,
     post_conditions: Vec<Expr>,
-    global_variables_old_values: HashMap<Ident, (Ident, Type)>
+    global_variables_old_values: HashMap<Ident, (Ident, Type)>,
+    is_function: bool
 }
 
 #[derive(Debug, Clone)]
@@ -145,7 +146,7 @@ impl slang_ui::Hook for App {
             if let None = m.body {
                 continue;
             }
-            let _ = verify_method(&m, cx, &mut solver);
+            let _ = verify_method(false, &m, cx, &mut solver);
         }
 
         Ok(())
@@ -242,7 +243,7 @@ fn does_function_body_comply_with_postconditions_in_isolated_scope(
         //println!("Method post conditions: {:#?}", method_ensures_post_conditions);
         return solver.scope(|solver| {
             solver.assert(expr_to_smt(&axiom_only_post_conditions)?.as_bool()?)?;
-            verify_method(&method_ensures_post_conditions, cx, solver)
+            verify_method(true, &method_ensures_post_conditions, cx, solver)
         });
         /*
         match (result1, result2) {
@@ -271,7 +272,7 @@ fn expr_to_smt(expr: &Expr) -> Result<Dynamic, Error> {
     }
 }
 
-fn verify_method(m: &Method, cx: &mut slang_ui::Context, solver: &mut Solver<Z3Binary>) -> Result<(), Error> {
+fn verify_method(is_function: bool, m: &Method, cx: &mut slang_ui::Context, solver: &mut Solver<Z3Binary>) -> Result<(), Error> {
     //println!("Checking method {}", m.name);
     // Get method's preconditions;
     let pres = m.requires();
@@ -329,7 +330,8 @@ fn verify_method(m: &Method, cx: &mut slang_ui::Context, solver: &mut Solver<Z3B
         name: m.name.clone(),
         post_conditions: post_conditions.clone(),
         variant_assertion: variant_assertion.clone(),
-        global_variables_old_values: global_variables_old_values.clone()
+        global_variables_old_values: global_variables_old_values.clone(),
+        is_function
     };
 
     // Get method's body
@@ -352,7 +354,7 @@ fn verify_method(m: &Method, cx: &mut slang_ui::Context, solver: &mut Solver<Z3B
 
     match m.return_ty.clone() {
         None => {
-            let mut last_cmd = Cmd::_return(&Some(Expr::result(&Type::Unresolved)));
+            let mut last_cmd = Cmd::_return(&Some(Expr::result(&Type::Unresolved))); // Returns result to indicate it is the last command and if it fails, postconditions should be highlighted
             last_cmd.span = m.name.span.clone();
             cmd = Box::new(cmd.seq(&last_cmd))
         },
@@ -829,7 +831,11 @@ fn return_to_ivl(expr: Option<&Expr>, span: &Span, method_context: &MethodContex
             for post_condition in method_context.post_conditions.clone() {
                 let replaced_result = replace_result_in_expression(&post_condition, return_value);
                 let mut replaced_old = replace_old_in_expression(&replaced_result, &method_context.global_variables_old_values);
-                replaced_old.span = span.clone();
+                if method_context.is_function {
+                    replaced_old.span = post_condition.span.clone();
+                } else {
+                    replaced_old.span = span.clone();
+                }
                 // assert method_post_conditions[result <- expr]
                 result = result.seq(&IVLCmd::assert(
                     &replaced_old,
