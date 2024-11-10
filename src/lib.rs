@@ -317,11 +317,12 @@ fn verify_method(m: &Method, cx: &mut slang_ui::Context, solver: &mut Solver<Z3B
             let variant_name = get_fresh_var_name(&Ident(String::from("variant")));
             let variant_assignment = IVLCmd::assign(&Name { span: variant_expr.span, ident: variant_name.clone() }, &variant_expr);
             let mut variant_base = Expr::new_typed(ExprKind::Infix(Box::new(Expr::ident(&variant_name.clone(), &Type::Int)), Op::Ge, Box::new(Expr::num(0))), Type::Bool);
+            variant_base.span = variant_expr.span.clone();
             ivl = ivl.seq(&variant_assignment).seq(&IVLCmd::assert(&variant_base, "Method variant might not be non-negative on entry"));
             variant_base.span = variant_expr.span.clone();
             &Expr::new_typed(ExprKind::Infix(Box::new(variant_expr.clone()), Op::Lt, Box::new(Expr::ident(&variant_name, &Type::Int))), Type::Bool)
         },
-        _ => &Expr::new_typed(ExprKind::Bool(true), Type::Bool)
+        None => &Expr::new_typed(ExprKind::Bool(true), Type::Bool)
     };
 
     let method_context = MethodContext {
