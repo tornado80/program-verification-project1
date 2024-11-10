@@ -376,6 +376,9 @@ fn verify_method(m: &Method, cx: &mut slang_ui::Context, solver: &mut Solver<Z3B
 
     let dsa = ivl_to_dsa(&ivl, &mut HashMap::new())?;
 
+
+    //println!("Method {} IVL {:#?}", m.name.to_string(), ivl.to_string());
+
     // Calculate obligation and error message (if obligation is not
     // verified)
     let wp_list = wp_set(&dsa, vec![])?;
@@ -854,7 +857,7 @@ fn return_to_ivl(expr: Option<&Expr>, span: &Span, method_context: &MethodContex
 
 fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, method_context: &MethodContext) -> Result<IVLCmd, Error> {
     let mut result = IVLCmd::assert(&Expr::new_typed(ExprKind::Bool(true), Type::Bool), "Please don't fail!");
-    
+
     match variant {
         Some(variant_expr) => {
             let mut variant_entry_assertion = IVLCmd::assert(&Expr::op(variant_expr, Op::Ge, &Expr::num(0)), "Loop variant might not be non-negative on entry");
@@ -867,10 +870,11 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, me
     let mut loop_invariants_assertions: Vec<(Expr, Expr)> = Vec::new();
     for invariant in invariants {
         let expr_without_broke = replace_broke_in_expression(invariant, false);
+        let expr_without_old = replace_old_in_expression(&expr_without_broke, &method_context.global_variables_old_values);
         result = result.seq(&IVLCmd::assert(
-            &expr_without_broke,
+            &expr_without_old,
             &format!("Loop invariant {} might not hold on entry", invariant.to_string())));
-        loop_invariants_assertions.push((invariant.clone(), expr_without_broke.clone()));
+        loop_invariants_assertions.push((invariant.clone(), expr_without_old.clone()));
     }
 
     for case in cases.cases.clone() {
@@ -882,7 +886,8 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, me
 
     for invariant in invariants {
         let expr_without_broke = replace_broke_in_expression(invariant, false);
-        result = result.seq(&IVLCmd::assume(&expr_without_broke))
+        let expr_without_old = replace_old_in_expression(&expr_without_broke, &method_context.global_variables_old_values);
+        result = result.seq(&IVLCmd::assume(&expr_without_old))
     }
 
     let variant_assertion = match variant {
@@ -910,7 +915,7 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, me
         }
         new_cases.push(Case {
             condition: case.condition.clone(),
-            cmd: 
+            cmd:
                 case.cmd
                 .seq(&loop_invariants_assertions_commands)
                 .seq(&Cmd::assert(&local_variant_assertion, &format!("Loop variant might not be decreased in case {}", case.condition.clone().to_string())))
@@ -941,7 +946,7 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, me
         }
 
     }
-    
+
 
     result = result.seq(&body_translation);
 
@@ -963,9 +968,9 @@ fn find_break_paths(command: &Cmd, context: IVLCmd, method_context: &MethodConte
             for case in body.cases.clone() {
                 let ivl_for_condition = IVLCmd::assume(&case.condition);
                 let paths_for_case = find_break_paths(
-                    &case.cmd, 
-                    match_context.seq(&ivl_for_condition), 
-                    method_context, 
+                    &case.cmd,
+                    match_context.seq(&ivl_for_condition),
+                    method_context,
                     loop_context)?;
                 paths.extend(paths_for_case);
                 match_context = match_context.seq(&IVLCmd::assume(&Expr::prefix(&case.condition, PrefixOp::Not)));
@@ -1261,14 +1266,14 @@ fn replace_in_expression(original_expression: &Expr, identifier: &Name, replace_
         ExprKind::Ident(name) if name.0 == identifier.ident.0 => replace_with_identifier.clone(),
         ExprKind::Prefix(op, expr) => Expr::new_typed(
             ExprKind::Prefix(
-                *op, 
+                *op,
                 Box::new(replace_in_expression(expr, identifier, replace_with_identifier))
             ),
             original_expression.ty.clone()),
         ExprKind::Infix(lhs, op, rhs) => Expr::new_typed(
             ExprKind::Infix(
                 Box::new(replace_in_expression(lhs, identifier, replace_with_identifier)),
-                *op, 
+                *op,
                 Box::new(replace_in_expression(rhs, identifier, replace_with_identifier))
             ),
             original_expression.ty.clone()),
