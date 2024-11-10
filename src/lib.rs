@@ -1285,6 +1285,12 @@ fn replace_in_expression(original_expression: &Expr, identifier: &Name, replace_
             }
             Expr::call(fun_name.clone(), replaced_args, function.clone())
         }
+        ExprKind::Ite(c, e1, e2) => {
+            replace_in_expression(c, identifier, replace_with_identifier).ite(
+                &replace_in_expression(e1, identifier, replace_with_identifier),
+                &replace_in_expression(e2, identifier, replace_with_identifier)
+            )
+        }
         _ => original_expression.clone(),
     };
     result.span = original_expression.span;
@@ -1320,6 +1326,12 @@ fn replace_result_in_expression(original_expression: &Expr, replace_expression: 
                 replaced_args.push(replace_result_in_expression(arg, replace_expression));
             }
             Expr::call(fun_name.clone(), replaced_args, function.clone())
+        }
+        ExprKind::Ite(c, e1, e2) => {
+            replace_result_in_expression(c, replace_expression).ite(
+                &replace_result_in_expression(e1, replace_expression),
+                &replace_result_in_expression(e2, replace_expression)
+            )
         }
         _ => original_expression.clone(),
     };
@@ -1362,6 +1374,12 @@ fn replace_old_in_expression(original_expression: &Expr, global_variables_old_va
                 replaced_args.push(replace_old_in_expression(arg, global_variables_old_values));
             }
             Expr::call(fun_name.clone(), replaced_args, function.clone())
+        }
+        ExprKind::Ite(c, e1, e2) => {
+            replace_old_in_expression(c, global_variables_old_values).ite(
+                &replace_old_in_expression(e1, global_variables_old_values),
+                &replace_old_in_expression(e2, global_variables_old_values)
+            )
         }
         _ => original_expression.clone(),
     };
