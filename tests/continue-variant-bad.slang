@@ -4,7 +4,6 @@ method client(n: Int)
     var i: Int := n;
     loop
         invariant i >= 0
-        // CheckError
         decreases i
     {
         i > 2 =>

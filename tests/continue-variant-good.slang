@@ -1,19 +1,17 @@
 method client(n: Int)
     requires n >= 10
-    requires n % 2 == 0
 {
-    var i: Int := 0;
+    var i: Int := n;
     loop
         invariant i >= 0
-        invariant i % 2 == 0
+        decreases i
     {
-        i < n =>
+        i > 2 =>
             match {
                 i == 6 =>
-                    i := i + 1;
-                    // @CheckError
+                    i := i - 4;
                     continue
             };
-            i := i + 2
+            i := i - 2
     }
 }
