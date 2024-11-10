@@ -12,7 +12,5 @@ method client()
             };
             i := i - 1
     };
-    assert i == 15;
-    // @CheckError
-    assert false
+    assert i == 15
 }

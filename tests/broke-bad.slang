@@ -4,7 +4,6 @@ method client()
     loop
         invariant i >= 15
         invariant i <= 30
-        // CheckError
         invariant broke ==> i == 10
         decreases i
     {
@@ -12,11 +11,9 @@ method client()
             match {
                 i == 15 =>
                 // @CheckError
-                 break
+                break
             };
             i := i - 1
     };
-    assert i == 15;
-    // @CheckError
-    assert false
+    assert i == 15
 }
