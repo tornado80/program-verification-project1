@@ -104,15 +104,6 @@ impl slang_ui::Hook for App {
                 ).op(Op::Eq, b)
             }
 
-
-
-            // add as axiom
-            /*
-            function foo (x:T) : S
-                axiom {
-                    forall x:T :: F -> (foo (x) == (e) and G[result := foo(x)])
-                }
-            */
             let mut post_conditions = Expr::bool(true);
             for post_condition in f.ensures() {
                 post_conditions = post_conditions.and(
@@ -201,7 +192,6 @@ fn does_function_body_comply_with_postconditions_in_isolated_scope(
                 span: b.span.clone()
             })
         };
-        //specifications.push(ensures_body);
         let mut requires: Vec<Specification> = Vec::new();
         for specification in &f.specifications {
             if let Specification::Requires { .. } = specification {
@@ -230,36 +220,11 @@ fn does_function_body_comply_with_postconditions_in_isolated_scope(
                 span: b.span.clone()
             })
         };
-        //println!("Axiom only body: {:#?}", axiom_only_body.to_string());
-        //println!("Method only body: {:#?}", method_ensures_body);
-        /*
-        let result1 = solver.scope(|solver| {
-            solver.assert(expr_to_smt(&axiom_only_body)?.as_bool()?)?;
-            verify_method(&method_ensures_body, cx, solver)
-        });
-        */
 
-        //println!("Axiom only post_conditions: {:#?}", axiom_only_post_conditions.to_string());
-        //println!("Method post conditions: {:#?}", method_ensures_post_conditions);
         return solver.scope(|solver| {
             solver.assert(expr_to_smt(&axiom_only_post_conditions)?.as_bool()?)?;
             verify_method(true, &method_ensures_post_conditions, cx, solver)
         });
-        /*
-        match (result1, result2) {
-            (Ok(_), Ok(_)) => (),
-            (Err(e), Ok(_)) => {
-                //println!("Ensure body failed {e}");
-                return Err(e) },
-            (Ok(_), Err(e)) => {
-                //println!("Ensure post conditions failed {e}");
-                return Err(e) }
-            (Err(_e1), Err(_e2)) => {
-                //println!("Both failed {e1} {e2}");
-            }
-        }
-
-         */
     }
     Ok(())
 }
@@ -273,7 +238,6 @@ fn expr_to_smt(expr: &Expr) -> Result<Dynamic, Error> {
 }
 
 fn verify_method(is_function: bool, m: &Method, cx: &mut slang_ui::Context, solver: &mut Solver<Z3Binary>) -> Result<(), Error> {
-    //println!("Checking method {}", m.name);
     // Get method's preconditions;
     let pres = m.requires();
     // Merge them into a single condition
@@ -292,7 +256,6 @@ fn verify_method(is_function: bool, m: &Method, cx: &mut slang_ui::Context, solv
     // However, we check for satisfiability of !(precondition -> wp_predicate)
     // which is equivalent to !(!precondition or wp_predicate) == precondition and !wp_predicate
     // Therefore we assert the precondition and later on assert the negation of each of the wp_predicate's
-    //println!("Spre: {:#?}", spre);
     solver.assert(spre.as_bool()?)?;
 
     let post_conditions: Vec<Expr> = m.ensures().map(|e| e.clone()).collect();
@@ -374,12 +337,8 @@ fn verify_method(is_function: bool, m: &Method, cx: &mut slang_ui::Context, solv
     )?;
 
     ivl = ivl.seq(&ivl_encoding);
-    //println!("IVL:\n{:#?}", ivl);
 
     let dsa = ivl_to_dsa(&ivl, &mut HashMap::new())?;
-
-
-    //println!("Method {} IVL {:#?}", m.name.to_string(), ivl.to_string());
 
     // Calculate obligation and error message (if obligation is not
     // verified)
@@ -403,7 +362,6 @@ fn verify_method(is_function: bool, m: &Method, cx: &mut slang_ui::Context, solv
                 // If the obligations result not valid, report the error (on
                 // the span in which the error happens)
                 smtlib::SatResult::Sat => {
-                    //println!("{}", format!("expr: {expr} span_start: {}  span_end: {}", span.start(), span.end()));
                     cx.error(span, format!("{}", msg));
                     res = Err(Error::UnexpectedSatResult{expected: SatResult::Unsat, actual: SatResult::Sat});
                 }
@@ -446,11 +404,9 @@ fn does_method_modify_unspecified_global_variables(
             None
         }
         CmdKind::Assignment { name, .. } => {
-            //println!("Searching for {} in symbol table {:#?}", name, symbol_table);
             if symbol_table.contains(&name.to_string()) {
                 return None
             }
-            //println!("Searching for {} in global variables {:#?}", name, specified_global_variables);
             if specified_global_variables.contains(&name.to_string()) {
                 return None
             }
@@ -508,7 +464,6 @@ fn ivl_to_dsa(ivl: &IVLCmd, varmap: &mut HashMap<Ident, (Ident, Type)>) -> Resul
             // get new ident for name and update it in the map
             let new_ident = get_fresh_var_name(&name.ident);
             varmap.insert(name.ident.clone(), (new_ident.clone(), expr.ty.clone()));
-            // assume new_ident == dsa
             Ok(assume_equality(
                 &Expr::new_typed(ExprKind::Ident(new_ident), expr.ty.clone()),
                 &dsa
@@ -638,8 +593,6 @@ fn extract_identifiers_from_expression(expr: &Expr, ignored_quantified_identifie
     }
 }
 
-// Encoding of (assert-only) statements into IVL (for programs comprised of only
-// a single assertion)
 fn cmd_to_ivlcmd(cmd: &Cmd, method_context: &MethodContext, loop_context: &LoopContext) -> Result<IVLCmd, Error> {
     let &Cmd { kind, span, .. } = &cmd;
     Ok(match kind {
@@ -819,7 +772,6 @@ fn return_to_ivl(expr: Option<&Expr>, span: &Span, method_context: &MethodContex
             for post_condition in method_context.post_conditions.clone() {
                 let mut replaced_old = replace_old_in_expression(&post_condition, &method_context.global_variables_old_values);
                 replaced_old.span = post_condition.span.clone();
-                //println!("replace_old {}", replaced_old);
                 // assert method_post_conditions
                 result = result.seq(&IVLCmd::assert(
                     &replaced_old,
@@ -847,7 +799,6 @@ fn return_to_ivl(expr: Option<&Expr>, span: &Span, method_context: &MethodContex
             for post_condition in method_context.post_conditions.clone() {
                 let mut replaced_old = replace_old_in_expression(&post_condition, &method_context.global_variables_old_values);
                 replaced_old.span = span.clone();
-                //println!("replace_old {}", replaced_old);
                 // assert method_post_conditions
                 result = result.seq(&IVLCmd::assert(
                     &replaced_old,
@@ -947,7 +898,6 @@ fn loop_to_ivl(invariants: &Vec<Expr>, variant: &Option<Expr>, cases: &Cases, me
         case_condition_prefix = case_condition_prefix.seq(&IVLCmd::assume(&case.condition.clone().prefix(PrefixOp::Not)));
         let break_paths = find_break_paths(&case.cmd, assume_case, method_context, loop_context)?;
         for break_path in break_paths {
-            //eprintln!("break_path {:#?}", break_path);
             body_translation = body_translation.nondet(&break_path)
         }
 
@@ -1266,7 +1216,6 @@ fn wp_set_seq(cmd1: &Box<IVLCmd>, cmd2: &Box<IVLCmd>, post_condition: Vec<Weakes
     return Ok(wp_set1);
 }
 
-// f (e, i, v) -> e[i <- v]
 fn replace_in_expression(original_expression: &Expr, identifier: &Name, replace_with_identifier: &Expr) -> Expr {
     let mut result = match &original_expression.kind {
         ExprKind::Ident(name) if name.0 == identifier.ident.0 => replace_with_identifier.clone(),
