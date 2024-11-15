@@ -256,11 +256,11 @@ fn verify_method(is_function: bool, m: &Method, cx: &mut slang_ui::Context, solv
     // However, we check for satisfiability of !(precondition -> wp_predicate)
     // which is equivalent to !(!precondition or wp_predicate) == precondition and !wp_predicate
     // Therefore we assert the precondition and later on assert the negation of each of the wp_predicate's
-    solver.assert(spre.as_bool()?)?;
+    //solver.assert(spre.as_bool()?)?;
 
     let post_conditions: Vec<Expr> = m.ensures().map(|e| e.clone()).collect();
 
-    let mut ivl = IVLCmd::nop();
+    let mut ivl = IVLCmd::assume(&pre);
 
     // We assign the values of global variables to some fresh variables
     // to replace with old later on
